@@ -273,6 +273,17 @@ has 162 tokens/s for a 3.6 GB 7B; generation is bandwidth-bound, so about
 90 tokens/s for this 6.2 GB file, 4 minutes per language and film in one
 chain; parallel chains add up as they do here (the GPU run measures it).
 
+### The command end to end
+
+`subtitler run` on the local copies: the film with only a Traditional
+Chinese track got its Simplified one by conversion (1,577 cues, under a
+second); the two films with no subtitle at all were transcribed from their
+package's audio (large-v3, int8 on CPU at background priority: the Korean
+window in 131 s, the Japanese one, tagged `und` and detected, in 559 s) and
+translated from the transcript into English, German and Simplified Chinese,
+each written as WebVTT with its NOTE and label ("German · AI") and listed in
+`subtitles.json` with origin, source, models and tokens.
+
 ### Script conversion
 
 OpenCC on whole tracks, against the same title's human Simplified track:
@@ -322,6 +333,11 @@ second).
 - **MADLAD-400 3B repeats short lines** (a two-word line comes back twice)
   and adds words (a "he asked" that nobody said) whatever the decoding settings;
   it is no subtitle translator.
+- **Transcripts without punctuation.** Whisper writes Japanese (and often
+  Chinese) with little punctuation, so sentence mode sees fragments: the
+  Japanese window needed 2–9 retries a language and sentences end up split
+  over cues. Grouping by pauses, or asking the model to segment first, is
+  the next step.
 - **Abbreviations.** "U.S." taken for a sentence end made the model join
   lines: seven times the requests and three times the tokens for one
   window; fixed.
