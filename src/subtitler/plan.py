@@ -79,10 +79,48 @@ def _matches(sub: Subtitle, lang: Lang) -> bool:
     return sub.script == lang.script
 
 
-def _source_rank(sub: Subtitle, original: str | None, langs: list[Lang]) -> tuple:
+# Under source_order="english" a complete English track goes first: the spike
+# found translation from English as good as or better than from the original.
+# Complete means it leaves no scene of the original-language track without
+# English: no run of MAX_GAP_RUN original cues without an English cue near
+# them, and under MAX_UNCOVERED of them overall. An English subtitle made for
+# viewers who hear the film's English lines leaves those scenes out.
+MAX_GAP_RUN = 8
+MAX_UNCOVERED = 0.08
+
+
+def coverage_gaps(a: list, b: list, tolerance: float = 1.0) -> tuple[int, float]:
+    """(longest run of a's cues without a b cue within `tolerance` s, share of such cues)."""
+    from bisect import bisect_left
+
+    spans = sorted((c.start, c.end) for c in b)
+    starts = [s for s, _ in spans]
+    run = longest = missing = 0
+    for c in a:
+        i = bisect_left(starts, c.start - 30)
+        covered = any(s <= c.end + tolerance and e >= c.start - tolerance for s, e in spans[i:i + 60])
+        run = 0 if covered else run + 1
+        missing += not covered
+        longest = max(longest, run)
+    return longest, missing / max(1, len(a))
+
+
+def _english_complete(pkg: Package, english: Subtitle, original: Subtitle) -> bool:
+    from . import vtt
+
+    try:
+        run, share = coverage_gaps(vtt.read(pkg.root / original.path), vtt.read(pkg.root / english.path))
+    except OSError:
+        return False
+    return run < MAX_GAP_RUN and share < MAX_UNCOVERED
+
+
+def _source_rank(sub: Subtitle, original: str | None, langs: list[Lang], english_first: bool = False) -> tuple:
     instance = [l.code for l in langs]
     lang = sub.language or ""
-    if original and lang == original:
+    if english_first and lang == "en":
+        tier = -1
+    elif original and lang == original:
         tier = 0
     elif lang == "en":
         tier = 1
@@ -98,13 +136,24 @@ def _source_rank(sub: Subtitle, original: str | None, langs: list[Lang]) -> tupl
 
 
 def plan(pkg: Package, languages: list[Lang], original_language: str | None = None,
-         exclude: tuple[str, ...] | list[str] = ()) -> list[LanguagePlan]:
-    """The candidates per language, best first; `exclude` drops sources (reported ones)."""
+         exclude: tuple[str, ...] | list[str] = (), source_order: str = "original") -> list[LanguagePlan]:
+    """The candidates per language, best first; `exclude` drops sources (reported ones).
+
+    source_order "original" is ADR-0014's: the original language, then English.
+    "english" puts a complete English track first (ENGLISH_COMPLETE).
+    """
     audio = pkg.main_audio
     audio_lang = audio.language if audio else None
     original = iso1(original_language) if original_language else audio_lang
     subs = [s for s in pkg.subtitles if s.exists and s.is_full]
     text_sources = [s for s in subs if s.is_text and not s.bilingual]
+    english_first = False
+    if source_order == "english":
+        fullest = lambda code: max((s for s in text_sources if s.language == code), key=lambda s: s.cues or 0,
+                                   default=None)
+        en = fullest("en")
+        orig = fullest(original) if original and original != "en" else None
+        english_first = en is not None and (orig is None or _english_complete(pkg, en, orig))
 
     plans = []
     for lang in languages:
@@ -127,7 +176,7 @@ def plan(pkg: Package, languages: list[Lang], original_language: str | None = No
                     cands.append(Candidate("convert", s.id, "zh", {"config": config, "from_script": s.script}))
         # 3. A translation of the best text subtitle in another language.
         sources = sorted((s for s in text_sources if s.language != lang.code),
-                         key=lambda s: _source_rank(s, original, languages))
+                         key=lambda s: _source_rank(s, original, languages, english_first))
         for s in sources:
             cands.append(Candidate("translate", s.id, s.language, {"sdh": s.is_sdh}))
         # 4. Speech recognition of the main audio: the last candidate, so it is

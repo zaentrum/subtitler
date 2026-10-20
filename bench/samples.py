@@ -44,7 +44,7 @@ def main() -> None:
         for tag in tags:
             p = root / "mt" / tag / f.name
             if p.exists():
-                systems[tag] = {(round(c.start, 3), round(c.end, 3)): c.text for c in vtt.read(p)}
+                systems[tag] = vtt.read(p)
         ref_path = t.subs.get(tgt.tag)
         ref = vtt.window(vtt.read(ref_path), *t.window) if ref_path else []
         k0 = len(prep.cues) // 3
@@ -54,10 +54,21 @@ def main() -> None:
                  f"{tgt_tag} subtitle over the same time (‖ between its cues).", ""]
         head = ["time", f"source ({src_tag})"] + list(systems) + [f"human {tgt_tag}"]
         lines += ["| " + " | ".join(head) + " |", "|" + "---|" * len(head)]
+        shown: dict[str, set] = {tag: set() for tag in systems}
         for c, s in list(zip(prep.cues, prep.texts))[k0:k0 + 20]:
-            key = (round(c.start, 3), round(c.end, 3))
             row = [vtt.timestamp(c.start), s.replace(" <br> ", " / ").replace("|", "∣")]
-            row += [cell(systems[tag].get(key, "")) for tag in systems]
+            for tag, hyp in systems.items():
+                # The translated cue over this source cue's time; one cue may cover a
+                # whole sentence of several source cues (shown once, then ↑).
+                over = [(min(h.end, c.end) - max(h.start, c.start), k) for k, h in enumerate(hyp)]
+                best = max(over, default=(0, None))
+                if best[1] is None or best[0] <= 0:
+                    row.append("")
+                elif best[1] in shown[tag]:
+                    row.append("↑")
+                else:
+                    shown[tag].add(best[1])
+                    row.append(cell(hyp[best[1]].text))
             row.append(overlapping(ref, c.start, c.end))
             lines.append("| " + " | ".join(row) + " |")
         (out / f"{f.stem}.md").write_text("\n".join(lines) + "\n", encoding="utf-8")

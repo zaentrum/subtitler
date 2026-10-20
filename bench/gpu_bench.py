@@ -191,7 +191,7 @@ def own_subtitle(pkg: package.Package, lang: str | None):
 def run_asr(sources, models_dir: Path, tmp: Path, minutes: float, modes, tag: str) -> None:
     import metrics
 
-    for model_name in ("large-v3-turbo", "large-v3"):
+    for model_name in [m for m in os.environ.get("ASR_MODELS", "large-v3-turbo,large-v3").split(",") if m]:
         path = fetch(models_dir, model_name)
         for mode, batch in modes:
             before = gpu_used_mib()
@@ -334,6 +334,16 @@ def run_mt(sources, models_dir: Path, llms, chains_list, cue_limit: int, tag: st
     targets = [Lang.parse("de"), Lang.parse("zh-Hans")]
     for llm in llms:
         gguf = fetch(models_dir, llm)
+        if tag == "alone":
+            # llama.cpp's own measure: sequences in parallel, each a translation batch's size.
+            npl = ",".join(str(c) for c in sorted(set([1, *chains_list])))
+            out = subprocess.run(["llama-batched-bench", "-m", str(gguf), "-c", "32768", "-b", "2048", "-ub", "512",
+                                  "-npp", "1300", "-ntg", "450", "-npl", npl, "-fa", "on", "-ngl", "99"],
+                                 capture_output=True, text=True)
+            say(f"llama-batched-bench {llm}:")
+            for line in out.stdout.splitlines():
+                if line.startswith("|"):
+                    say("  " + line)
         for chains in chains_list:
             before = gpu_used_mib()
             with LlamaServer(gguf, slots=chains) as srv, GpuSampler() as g:

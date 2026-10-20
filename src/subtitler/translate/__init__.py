@@ -14,6 +14,7 @@ import re
 from dataclasses import dataclass
 
 from .. import script, sdh, vtt, wrap
+from ..cues import _ABBREV
 from ..langs import Lang
 
 _DASH = re.compile(r"^\s*[-‐–—]\s*")
@@ -81,7 +82,8 @@ def sentence_groups(prep: Prepared, max_cues: int = 3, max_gap: float = 1.5) -> 
             groups.append(cur)
             cur = []
         cur.append(i)
-        if _SENTENCE_END.search(t) or len(cur) >= max_cues:
+        last_word = t.split()[-1].lower() if t.split() else ""
+        if (_SENTENCE_END.search(t) and last_word not in _ABBREV) or len(cur) >= max_cues:
             groups.append(cur)
             cur = []
     if cur:
@@ -166,4 +168,4 @@ def translate_cues(cues: list[vtt.Cue], src: Lang, tgt: Lang, translator, is_sdh
         i += span
     if hasattr(usage, "merged"):
         usage.merged = merged
-    return result, usage, failures
+    return wrap.reading_time(result, tgt.code), usage, failures

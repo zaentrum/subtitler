@@ -30,8 +30,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends git cmake build
          -DCMAKE_CUDA_ARCHITECTURES="${CUDA_ARCHITECTURES}" -DBUILD_SHARED_LIBS=OFF -DLLAMA_CURL=OFF \
          -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF \
          -DCMAKE_EXE_LINKER_FLAGS=-Wl,--allow-shlib-undefined \
-    && cmake --build /build -j"$(nproc)" --target llama-server llama-bench \
-    && mkdir -p /out && cp /build/bin/llama-server /build/bin/llama-bench /out/
+    && cmake --build /build -j"$(nproc)" --target llama-server llama-bench llama-batched-bench \
+    && mkdir -p /out && cp /build/bin/llama-server /build/bin/llama-bench /build/bin/llama-batched-bench /out/
 
 # FFmpeg as the live-rung spike and the batch transcoder take it: BtbN's
 # prebuilt GPL build of the 7.1 release branch (n7.1.5, shared), checked

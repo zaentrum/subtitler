@@ -17,8 +17,11 @@ from pathlib import Path
 def main() -> None:
     from comet import download_model, load_from_checkpoint
 
+    import os
+
     root = Path(sys.argv[1])
     tags = sys.argv[2:] or sorted(p.name for p in (root / "mt-units").iterdir() if p.is_dir())
+    accelerator = os.environ.get("COMET_ACCELERATOR", "cpu")  # mps on a Mac, cuda on a GPU
     out_path = root / "comet-scores.json"
     scores = json.loads(out_path.read_text()) if out_path.exists() else {}
     model = load_from_checkpoint(download_model("Unbabel/wmt22-comet-da"))
@@ -29,7 +32,10 @@ def main() -> None:
             data = [d for d in data if d["src"] and d["mt"] and d["ref"]]
             if not data:
                 continue
-            res = model.predict(data, batch_size=32, gpus=0, progress_bar=False)
+            if accelerator == "cpu":
+                res = model.predict(data, batch_size=32, gpus=0, progress_bar=False)
+            else:
+                res = model.predict(data, batch_size=32, gpus=1, accelerator=accelerator, progress_bar=False)
             scores[key] = {"comet": round(float(res.system_score), 4), "units": len(data)}
             print(f"{key}\tCOMET={res.system_score:.4f}\tunits={len(data)}", flush=True)
             out_path.write_text(json.dumps(scores, indent=1))

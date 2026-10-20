@@ -65,10 +65,14 @@ def main() -> None:
                                          "mt": h_text, "ref": r_text}, ensure_ascii=False) + "\n")
             st = wrap.stats(hyp, tgt.code).as_dict()
             rst = wrap.stats(ref, tgt.code).as_dict()
+            # Runs made before translate_cues applied wrap.reading_time: the same rule here.
+            retimed = wrap.reading_time([vtt.Cue(c.start, c.end, c.text) for c in hyp], tgt.code)
+            st_rt = wrap.stats(retimed, tgt.code).as_dict()
             disp = metrics.displacement(hyp, ref, tgt.code)
             u = info.get("usage", {})
             row = {"tag": tag, "title": name, "src": src_tag, "tgt": tgt_tag, **score.as_dict(), **disp, **anch,
-                   "over_cps_pct": st["over_cps_pct"], "over_line_pct": st["over_line_pct"],
+                   "over_cps_pct": st["over_cps_pct"], "over_cps_retimed_pct": st_rt["over_cps_pct"],
+                   "over_line_pct": st["over_line_pct"],
                    "over_lines_pct": st["over_lines_pct"], "ref_over_cps_pct": rst["over_cps_pct"],
                    "cues": len(hyp), "failures": info.get("failures"), "gen_tok_s": u.get("gen_tok_s"),
                    "completion_tokens": u.get("completion_tokens", u.get("output_tokens")),

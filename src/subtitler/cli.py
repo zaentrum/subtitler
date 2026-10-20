@@ -134,6 +134,9 @@ class Runner:
                     entry.update(source_language=src_lang, asr=self.asr_info)
                     if src_lang == lp.language.code:  # detection found the target language itself
                         res = self.transcript
+                        if lp.language.code == "zh":
+                            res = [cue.with_text(script.convert(cue.text, "s2t" if lp.language.script == "Hant" else "t2s"))
+                                   for cue in res]
                         entry.update(origin="transcribed", model=self.asr_info["model"])
                         self._write(out, lp, entry, res, t0, made)
                         continue
@@ -172,6 +175,8 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--original-language", default=None,
                        help="the title's original language when the catalog knows it (default: the main audio's)")
         p.add_argument("--exclude", nargs="*", default=[], help="sources a viewer reported (next candidate)")
+        p.add_argument("--source-order", choices=["original", "english"], default="original",
+                       help="original: ADR-0014's order; english: a complete English track first")
         if name == "run":
             p.add_argument("--out", required=True)
             p.add_argument("--mt", choices=["llm", "madlad"], default="llm")
@@ -191,7 +196,7 @@ def main(argv: list[str] | None = None) -> int:
     a = ap.parse_args(argv)
 
     pkg = load(a.package)
-    plans = plan(pkg, parse_list(a.languages), a.original_language, tuple(a.exclude))
+    plans = plan(pkg, parse_list(a.languages), a.original_language, tuple(a.exclude), a.source_order)
     _print_plan(pkg, plans)
     if a.cmd == "plan":
         return 0

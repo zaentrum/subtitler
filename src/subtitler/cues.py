@@ -37,7 +37,8 @@ _SENTENCE_END = re.compile(r"[.?!…。？！]['\"”’」』)]*$")
 _CLAUSE_END = re.compile(r"[,;:，、；：—–-]['\"”’]*$")
 # Abbreviations whose full stop ends no sentence.
 _ABBREV = {"mr.", "mrs.", "ms.", "dr.", "st.", "jr.", "sr.", "vs.", "prof.", "gen.", "col.", "sgt.", "lt.",
-           "capt.", "mt.", "no.", "hr.", "fr.", "frl.", "nr.", "bzw.", "z.b.", "u.a.", "ca.", "sig.", "dott."}
+           "capt.", "mt.", "no.", "u.s.", "u.k.", "d.c.", "l.a.", "a.m.", "p.m.", "e.g.", "i.e.",
+           "hr.", "fr.", "frl.", "nr.", "bzw.", "z.b.", "u.a.", "ca.", "sig.", "dott."}
 # Hesitations a dialogue subtitle leaves out.
 _FILLERS = {
     "en": {"uh", "um", "er", "erm", "hmm", "mm", "mm-hmm", "mhm", "uh-huh", "uh-uh", "hm"},

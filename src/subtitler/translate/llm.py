@@ -251,7 +251,14 @@ class LlmTranslator:
             single = parse_answer(text, numbers)
             if len(single) == len(batch) and all(single.values()):
                 return {n - 1: (n - 1, t) for n, t in single.items()}
-        usage.rejected.append({"lines": f"{numbers[0]}-{numbers[-1]}", "answer": text[:2000]})
+        answered = [int(m) for m in re.findall(r"^\s*(\d+)", text, re.M)]
+        spans = parse_spans(text, numbers)
+        usage.rejected.append({
+            "lines": f"{numbers[0]}-{numbers[-1]}",
+            "missing": sorted(set(numbers) - {k for a, (b, _) in spans.items() for k in range(a, b + 1)}),
+            "doubled": sorted({n for n in answered if answered.count(n) > 1}),
+            "empty": sorted(a for a, (_, t) in spans.items() if not t),
+            "answer": text[:8000]})
         return None
 
     def _batch(self, texts, idx, after, sys_msg, prev, usage, budgets) -> dict[int, tuple[int, str]]:

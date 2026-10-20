@@ -43,13 +43,13 @@ def main() -> None:
         print(f"| {v['run']} | {v['clip']} | {v['detected']} ({v['detected_p']}) | {v['cues']} |")
 
     print("\n## Translation (the same windows, against the title's human subtitle)\n")
-    print("| system | title | pair | units | chrF | BLEU | COMET | length vs human | over reading speed % (human) | over line % |")
+    print("| system | title | pair | units | chrF | BLEU | COMET | length vs human | over reading speed %: made / re-timed (human) | over line % |")
     print("|---|---|---|---|---|---|---|---|---|---|")
     for k, v in sorted(mt.items(), key=lambda kv: (kv[1]["title"], kv[1]["src"], kv[1]["tgt"], kv[1]["tag"])):
         c = comet.get(k, {}).get("comet")
         print(f"| {v['tag']} | {v['title']} | {v['src']}→{v['tgt']} | {v['units']} | {v['chrf']:.1f} | {v['bleu']:.1f} | "
-              f"{c if c is not None else '-'} | {v['len_ratio']:.2f} | {v['over_cps_pct']} ({v['ref_over_cps_pct']}) | "
-              f"{v['over_line_pct']} |")
+              f"{c if c is not None else '-'} | {v['len_ratio']:.2f} | {v['over_cps_pct']} / "
+              f"{v.get('over_cps_retimed_pct', '-')} ({v['ref_over_cps_pct']}) | {v['over_line_pct']} |")
 
     # Means per system over the pairs every compared system has.
     tags = sorted({v["tag"] for v in mt.values()})

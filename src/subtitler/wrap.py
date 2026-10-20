@@ -93,32 +93,38 @@ def zh_style(text: str) -> str:
     return re.sub(r" {2,}", " ", t).strip()
 
 
-def _split_unspaced(text: str, lim: Limits) -> list[str]:
+# Where a Chinese or Japanese line may break when there is no punctuation:
+# after particles and function characters; never before closing punctuation,
+# small kana or the long-vowel mark, never inside a Latin word or a number.
+_AFTER_ZH = set("的了着过吗呢吧啊呀么得地就都也还又")
+_AFTER_JA = set("はがをにでとものへやねよ")
+_NO_LINE_START = set("、。，．！？!?」』）)]ー〜っゃゅょぁぃぅぇぉァィゥェォッャュョ・…")
+
+
+def _split_unspaced(text: str, lim: Limits, lang: str = "zh") -> list[str]:
     t = text.strip()
-    n = width(t)
-    if n <= lim.chars_per_line:
+    if width(t) <= lim.chars_per_line:
         return [t]
-    mid = n / 2
-    candidates = []
-    for i, ch in enumerate(t):
-        if i == 0 or i >= len(t) - 1:
-            continue
-        if ch == " " or t[i - 1] in _BREAK_AFTER:
-            candidates.append(i)
+    after = _AFTER_JA if lang == "ja" else _AFTER_ZH
     best = None
-    for i in candidates:
+    for i in range(1, len(t)):
         a, b = t[:i].strip(), t[i:].strip()
+        if not a or not b:
+            continue
         over = max(0, width(a) - lim.chars_per_line) + max(0, width(b) - lim.chars_per_line)
         score = over * 100 + abs(width(a) - width(b))
+        prev, nxt = t[i - 1], t[i]
+        if prev == " " or nxt == " " or prev in _BREAK_AFTER:
+            score -= 20
+        elif prev in after:
+            score -= 8
+        if nxt in _NO_LINE_START:
+            score += 60
+        if prev.isascii() and nxt.isascii() and prev.isalnum() and nxt.isalnum():
+            score += 60
         if best is None or score < best[0]:
             best = (score, [a, b])
-    if best and best[0] < 100:
-        return best[1]
-    # No break point fits: split in the middle, not inside a Latin word or number.
-    i = int(round(mid))
-    while 0 < i < len(t) and t[i - 1].isascii() and t[i].isascii() and t[i].isalnum():
-        i += 1
-    return [t[:i].strip(), t[i:].strip()]
+    return best[1] if best else [t]
 
 
 def rewrap(text: str, lang: str) -> str:
@@ -138,9 +144,27 @@ def rewrap(text: str, lang: str) -> str:
         joined = "".join(raw_lines) if all(not l.isascii() for l in raw_lines) else " ".join(raw_lines)
         if lang in ("zh", "yue"):
             joined = zh_style(joined)
-        return "\n".join(_split_unspaced(joined, lim))
+        return "\n".join(_split_unspaced(joined, lim, lang))
     joined = " ".join(raw_lines)
     return "\n".join(_split_spaced(joined, lim, lang))
+
+
+def reading_time(cues, lang: str, most: float = 1.0, gap: float = 0.083):
+    """Cues too fast to read stay up longer: just enough for the language's reading speed,
+    at most `most` seconds more, never into the next cue. Times only; the text is the same."""
+    lim = limits(lang)
+    out = []
+    for i, c in enumerate(cues):
+        lines = [l for l in c.text.split("\n") if l.strip()]
+        chars = sum(width(l.replace(" ", "")) if lang in UNSPACED else width(l) for l in lines)
+        need = chars / lim.cps
+        end = c.end
+        if c.duration < need:
+            nxt = cues[i + 1].start - gap if i + 1 < len(cues) else c.end + most
+            end = max(c.end, min(c.start + need, c.end + most, nxt))
+        c.end = end
+        out.append(c)
+    return out
 
 
 @dataclass

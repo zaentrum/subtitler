@@ -58,6 +58,18 @@ def test_original_language_first_then_english(make_package):
     assert c["zh-Hans"].source_language == "it"
 
 
+def test_source_order_english_takes_a_complete_english_track_first(make_package):
+    root = make_package(audio=[("ita", True)], subs=[{"language": "ita", "cues": 40}, {"language": "eng", "cues": 40}])
+    assert choices(root, source_order="english")["de"].source_language == "en"
+    assert choices(root)["de"].source_language == "it"  # ADR-0014's order stays the default
+
+
+def test_an_english_track_that_leaves_a_scene_out_is_not_complete(make_package):
+    # The last ten Italian cues have no English: a scene spoken in English.
+    root = make_package(audio=[("ita", True)], subs=[{"language": "ita", "cues": 40}, {"language": "eng", "cues": 30}])
+    assert choices(root, source_order="english")["de"].source_language == "it"
+
+
 def test_english_before_other_languages(make_package):
     root = make_package(audio=[("kor", True)], subs=[{"language": "fre"}, {"language": "eng"}])
     c = choices(root)
@@ -109,6 +121,13 @@ def test_unflagged_signs_track_is_partial(make_package):
     assert pkg.subtitles[0].partial
     c = choices(root)
     assert c["de"].action == "translate" and c["de"].source_language == "en"
+
+
+def test_a_sparse_but_only_track_still_counts(make_package):
+    # 15 cues in 10 minutes and nothing fuller beside it: a quiet film, not signs.
+    root = make_package(subs=[{"language": "eng", "cues": 15}])
+    assert not load(root).subtitles[0].partial
+    assert choices(root)["en"].action == "keep"
 
 
 def test_commentary_is_no_subtitle(make_package):

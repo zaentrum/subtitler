@@ -47,8 +47,8 @@ BCP 47 with a script where it matters, default `en,de,zh-Hans`):
    text subtitle at all, or a viewer reported every other one.
 
 What counts as a subtitle: not forced, not commentary, not a track of signs
-(fewer than 2.5 cues a minute, which packages carry unflagged); its file on
-disk. Chinese tracks carry `chi` whatever they are: the script comes from
+(under 30 % of the cues of the title's fullest text track, or under one cue
+a minute: packages carry such tracks unflagged); its file on disk. Chinese tracks carry `chi` whatever they are: the script comes from
 the text (OpenCC changes many characters of the other script and almost
 none of its own), the title only where the text says nothing; written
 Cantonese (粵語 characters, or the title) is another language and never

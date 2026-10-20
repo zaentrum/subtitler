@@ -105,8 +105,10 @@ def _detect_chinese(sub: Subtitle, root: Path) -> None:
 
 
 # Dialogue subtitles run at 8-20 cues a minute; a track of signs and songs
-# that is not flagged forced at well under one.
-MIN_CUES_PER_MINUTE = 2.5
+# that is not flagged forced at well under one, and at a small share of the
+# title's dialogue tracks.
+MIN_CUES_PER_MINUTE = 1.0
+MIN_SHARE_OF_FULLEST = 0.3
 
 
 def _count_cues(path: Path) -> int:
@@ -133,8 +135,14 @@ def load(root: str | Path) -> Package:
             visible=bool(s.get("visible", True)), exists=bool(path) and (root / path).is_file())
         if sub.exists and sub.is_text:
             sub.cues = _count_cues(root / path)
-            sub.partial = minutes >= 10 and sub.cues < MIN_CUES_PER_MINUTE * minutes
         if sub.language in ("zh", "yue"):
             _detect_chinese(sub, root)
         subs.append(sub)
+    # A text track far sparser than the title's fullest one, or under a cue a
+    # minute, is signs and songs: no subtitle of its language.
+    counts = [s.cues for s in subs if s.cues and not s.forced and s.purpose != "commentary"]
+    fullest = max(counts) if counts else 0
+    for s in subs:
+        if s.cues is not None and minutes >= 10:
+            s.partial = s.cues < MIN_SHARE_OF_FULLEST * fullest or s.cues < MIN_CUES_PER_MINUTE * minutes
     return Package(root, audio, subs)

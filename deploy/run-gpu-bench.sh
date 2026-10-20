@@ -5,6 +5,7 @@
 #   MODELS_DIR    model folder, a volume (default /models)
 #   PHASES        asr,mt,busy (default all three)
 #   ASR_MINUTES   minutes of each source's audio (default 0 = all of it)
+#   ASR_MODELS    speech models (default large-v3-turbo,large-v3)
 #   ASR_BATCH     batched inference batch size (default 16)
 #   LLMS          GGUF models (default qwen3.5-9b-q4km,qwen2.5-7b-q4km)
 #   CHAINS        translation chains in flight (default 1,4,8)
