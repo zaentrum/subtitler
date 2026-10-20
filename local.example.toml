@@ -1,0 +1,30 @@
+# Copy to local.toml (untracked) and point it at local copies of library
+# packages. Paths are relative to `scratch`. Keep the copies small: the
+# package.json, the subtitle files you score against and, for speech
+# recognition, a window of the main audio rendition (init.mp4 plus the
+# segments of about ten minutes).
+scratch = "/path/to/scratch"
+
+[models]
+fw_turbo = "models/faster-whisper-large-v3-turbo"
+fw_v3 = "models/faster-whisper-large-v3"
+mlx_turbo = "models/whisper-large-v3-turbo"
+madlad = "models/madlad400-3b-mt-ct2-int8"
+qwen7 = "models/qwen2.5-7b-instruct-gguf/Qwen2.5-7B-Instruct-Q4_K_M.gguf"
+
+# One table per title. offset: the first audio sample of the window on the
+# title's timeline (ffprobe's first packet pts of init.mp4 + first segment).
+# subs: language tag -> the package's subtitle file; sdh: the SDH ones.
+[titles.example-movie]
+package = "media/example-movie"
+wav = "audio/example-movie.wav"
+offset = 1200.02
+audio = "en"
+subs = { en = "subs/0.vtt", de = "subs/3.vtt", zh-Hans = "subs/5.vtt", zh-Hant = "subs/6.vtt" }
+sdh = []
+
+[titles.example-no-subtitles]
+package = "media/example-no-subtitles"
+wav = "audio/example-no-subtitles.wav"
+offset = 1200.02
+audio = "ko"

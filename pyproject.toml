@@ -1,0 +1,32 @@
+[project]
+name = "subtitler"
+version = "0.1.0"
+description = "Spike for ADR-0014: subtitles in an instance's languages for every title"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["opencc>=1.1"]
+
+[project.optional-dependencies]
+# Speech recognition: faster-whisper on CTranslate2 (CPU, CUDA).
+asr = ["faster-whisper>=1.1", "numpy"]
+# Speech recognition on Apple's Metal GPU (macOS only).
+mlx = ["mlx-whisper>=0.4"]
+# The dedicated translation model (MADLAD-400 on CTranslate2).
+mt = ["ctranslate2>=4.5", "sentencepiece"]
+# Scores of the bench.
+eval = ["jiwer>=3", "sacrebleu>=2.4", "whisper-normalizer"]
+comet = ["unbabel-comet>=2.2"]
+dev = ["pytest"]
+
+[project.scripts]
+subtitler = "subtitler.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

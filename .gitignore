@@ -1,0 +1,13 @@
+# Local test configuration: paths of library copies, never committed.
+local.toml
+*.local.toml
+deploy/*.local.yaml
+# Outputs, models and media stay outside the repository.
+results/
+models/
+*.wav
+*.gguf
+__pycache__/
+*.egg-info/
+.pytest_cache/
+.venv/
