@@ -35,6 +35,45 @@ class Word:
 
 _SENTENCE_END = re.compile(r"[.?!…。？！]['\"”’」』)]*$")
 _CLAUSE_END = re.compile(r"[,;:，、；：—–-]['\"”’]*$")
+# Abbreviations whose full stop ends no sentence.
+_ABBREV = {"mr.", "mrs.", "ms.", "dr.", "st.", "jr.", "sr.", "vs.", "prof.", "gen.", "col.", "sgt.", "lt.",
+           "capt.", "mt.", "no.", "hr.", "fr.", "frl.", "nr.", "bzw.", "z.b.", "u.a.", "ca.", "sig.", "dott."}
+# Hesitations a dialogue subtitle leaves out.
+_FILLERS = {
+    "en": {"uh", "um", "er", "erm", "hmm", "mm", "mm-hmm", "mhm", "uh-huh", "uh-uh", "hm"},
+    "de": {"äh", "ähm", "öhm", "hm", "hmm", "mhm", "mm"},
+    "it": {"ehm", "mmh", "uhm"},
+}
+
+
+def _ends_sentence(word: str) -> bool:
+    w = word.strip()
+    return bool(_SENTENCE_END.search(w)) and w.lower() not in _ABBREV
+
+
+def drop_fillers(words: list[Word], lang: str) -> list[Word]:
+    """Hesitations out; a sentence that started with one starts with the next word, capitalised."""
+    fillers = _FILLERS.get(lang)
+    if not fillers:
+        return words
+    out: list[Word] = []
+    cap = False
+    for w in words:
+        bare = re.sub(r"[^\w-]", "", w.text.strip().lower()).strip("-")  # Whisper splits "Mm-hmm" in two
+        if bare in fillers:
+            if not out or _ends_sentence(out[-1].text):
+                cap = True
+            if _ends_sentence(w.text) and out and not _ends_sentence(out[-1].text):
+                out[-1] = Word(out[-1].start, out[-1].end, out[-1].text.rstrip(",;") + w.text.strip()[-1],
+                               out[-1].probability)
+            continue
+        if cap:
+            t = w.text
+            lead = len(t) - len(t.lstrip())
+            w = Word(w.start, w.end, t[:lead] + t[lead:lead + 1].upper() + t[lead + 1:], w.probability)
+            cap = False
+        out.append(w)
+    return out
 _CONJ = {
     "en": {"and", "but", "or", "so", "because", "that", "which", "who", "when", "if", "while", "where",
            "then", "until", "before", "after", "since", "though", "although", "unless"},
@@ -75,7 +114,7 @@ def clean_words(words: list[Word], orphan_gap: float = 2.0) -> list[Word]:
         gap = nxt.start - w.end
         # A lone word that ends no sentence, far from what came before and
         # from what follows: Whisper pinned it to the start of the stretch.
-        if gap > orphan_gap and prev_gap > orphan_gap and not _SENTENCE_END.search(w.text.strip()):
+        if gap > orphan_gap and prev_gap > orphan_gap and not _ends_sentence(w.text):
             d = min(0.6, max(0.2, w.end - w.start))
             w.end = nxt.start - 0.05
             w.start = w.end - d
@@ -90,7 +129,7 @@ def _split_score(words: list[Word], k: int, lang: str) -> float:
     cost = abs(a - b) / max(1, a + b) * 100
     prev = words[k - 1].text.strip()
     gap = words[k].start - words[k - 1].end
-    if _SENTENCE_END.search(prev):
+    if _ends_sentence(prev):
         cost -= 40
     elif _CLAUSE_END.search(prev):
         cost -= 30
@@ -144,7 +183,7 @@ def _sentences(words: list[Word]) -> list[list[Word]]:
     out, cur = [], []
     for w in words:
         cur.append(w)
-        if _SENTENCE_END.search(w.text.strip()):
+        if _ends_sentence(w.text):
             out.append(cur)
             cur = []
     if cur:
@@ -157,7 +196,7 @@ def build(words: list[Word], lang: str, *, max_duration: float = 7.0, min_durati
     lim = wrap.limits(lang)
     max_chars = lim.chars_per_cue
     units: list[list[Word]] = []
-    for chunk in _chunks(clean_words(words), hard_pause):
+    for chunk in _chunks(drop_fillers(clean_words(words), lang), hard_pause):
         for sent in _sentences(chunk):
             units += _split_long(sent, lang, max_chars, max_duration)
 

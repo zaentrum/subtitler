@@ -63,6 +63,22 @@ def test_a_span_too_long_for_one_cue_is_split_back():
     assert " ".join(c.text.replace("\n", " ") for c in out) == long
 
 
+def test_sentence_mode_sends_sentences_and_places_them_over_their_cues():
+    from subtitler.translate import prepare, sentence_groups
+
+    cs = cues("In the spring, the council", "approved a plan.", "-Yes.\n-No.", "Fine.")
+    assert sentence_groups(prepare(cs)) == [[0, 1], [2], [3]]
+
+    def answer(numbers, n):
+        assert numbers == [1, 2, 3]  # three sentences, not four cues
+        return "1| Im Frühling hat der Gemeinderat einen Plan beschlossen.\n2| -Ja. <br> -Nein.\n3| Gut."
+
+    tr = LlmTranslator(FakeClient(answer))
+    out, _, _ = translate_cues(cs, EN, DE, tr, sentences=True)
+    assert [(c.start, c.end) for c in out] == [(0.0, 5.0), (6.0, 8.0), (9.0, 11.0)]
+    assert out[1].text == "-Ja.\n-Nein."
+
+
 def test_without_spans_a_range_answer_is_asked_again():
     def answer(numbers, n):
         if n == 1:

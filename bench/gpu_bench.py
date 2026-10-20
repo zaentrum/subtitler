@@ -56,6 +56,9 @@ MODELS = {
 }
 
 REPORT: list[str] = []
+# cuda on the GPU node; cpu for a smoke run of this script anywhere else.
+DEVICE = os.environ.get("BENCH_DEVICE", "cuda")
+COMPUTE = {"cuda": {"asr": "float16", "mt": "int8_float16"}, "cpu": {"asr": "int8", "mt": "int8"}}
 RESULTS: dict = {"asr": [], "mt": [], "gpu": {}, "estimate": {}}
 
 
@@ -192,7 +195,7 @@ def run_asr(sources, models_dir: Path, tmp: Path, minutes: float, modes, tag: st
         path = fetch(models_dir, model_name)
         for mode, batch in modes:
             before = gpu_used_mib()
-            m = asr.FasterWhisper(str(path), device="cuda", compute_type="float16", batch_size=batch)
+            m = asr.FasterWhisper(str(path), device=DEVICE, compute_type=COMPUTE[DEVICE]["asr"], batch_size=batch)
             loaded = gpu_used_mib()
             for src in sources:
                 pkg = package.load(src["package"])
@@ -231,10 +234,10 @@ def run_asr(sources, models_dir: Path, tmp: Path, minutes: float, modes, tag: st
 # --- translation -------------------------------------------------------------
 
 class LlamaServer:
-    def __init__(self, gguf: Path, slots: int, ctx_per_slot: int = 8192, port: int = 8091):
+    def __init__(self, gguf: Path, slots: int, ctx_per_slot: int = 8192, port: int = int(os.environ.get("BENCH_PORT", "8091"))):
         self.port = port
         self.cmd = ["llama-server", "-m", str(gguf), "--host", "127.0.0.1", "--port", str(port), "-ngl", "99",
-                    "-fa", "on", "-np", str(slots), "-c", str(ctx_per_slot * slots), "--no-webui", "--metrics"]
+                    "-fa", "on", "--reasoning", "off", "-np", str(slots), "-c", str(ctx_per_slot * slots), "--no-webui", "--metrics"]
         self.proc: subprocess.Popen | None = None
 
     def __enter__(self):
@@ -285,7 +288,8 @@ def translate_chains(cues_in, src: Lang, tgt: Lang, url: str, chains: int, batch
 
     def work(k):
         tr = LlmTranslator(Client(url), batch=batch)
-        results[k] = translate_cues(parts[k], src, tgt, tr, is_sdh=is_sdh)
+        results[k] = translate_cues(parts[k], src, tgt, tr, is_sdh=is_sdh,
+                                    sentences=os.environ.get("MT_SENTENCES", "1") == "1")
 
     t0 = time.perf_counter()
     threads = [threading.Thread(target=work, args=(k,)) for k in range(chains)]
@@ -354,15 +358,16 @@ def run_mt(sources, models_dir: Path, llms, chains_list, cue_limit: int, tag: st
         from subtitler.translate import translate_cues
         from subtitler.translate.madlad import MadladTranslator
 
-        tr = MadladTranslator(str(fetch(models_dir, "madlad400-3b")), device="cuda", compute_type="int8_float16",
-                              beam_size=4, batch=32)
+        tr = MadladTranslator(str(fetch(models_dir, "madlad400-3b")), device=DEVICE, compute_type=COMPUTE[DEVICE]["mt"],
+                              beam_size=4, batch=32, merge=False)
         for name, sub, cs in jobs:
             for tgt in targets:
                 if tgt.code == sub.language:
                     continue
                 with GpuSampler() as g:
                     t0 = time.perf_counter()
-                    res, usage, failures = translate_cues(cs, Lang(sub.language or "en"), tgt, tr, is_sdh=sub.is_sdh)
+                    res, usage, failures = translate_cues(cs, Lang(sub.language or "en"), tgt, tr, is_sdh=sub.is_sdh,
+                                                          sentences=True)
                     wall = time.perf_counter() - t0
                 u = usage.as_dict()
                 row = {"tag": tag, "model": "madlad400-3b", "chains": 1, "source": name, "src": sub.language,

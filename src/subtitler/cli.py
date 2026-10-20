@@ -97,7 +97,7 @@ class Runner:
             else:
                 from .translate.madlad import MadladTranslator
 
-                self._mt = MadladTranslator(self.a.madlad_model)
+                self._mt = MadladTranslator(self.a.madlad_model, merge=not self.a.sentences)
                 self.mt_model = self._mt.name
         return self._mt
 
@@ -141,7 +141,8 @@ class Runner:
                     sub = next(s for s in pkg.subtitles if s.id == c.source)
                     src_lang, cues_in, is_sdh = sub.language, vtt.read(pkg.root / sub.path), sub.is_sdh
                 tr = self.translator()
-                res, usage, failures = translate_cues(cues_in, Lang.parse(src_lang or "en"), lp.language, tr, is_sdh=is_sdh)
+                res, usage, failures = translate_cues(cues_in, Lang.parse(src_lang or "en"), lp.language, tr,
+                                                      is_sdh=is_sdh, sentences=self.a.sentences)
                 entry.update(model=self.mt_model, usage=usage.as_dict(), failures=failures)
             self._write(out, lp, entry, res, t0, made)
         manifest = {"package": str(pkg.root), "made_by": f"subtitler {__version__}",
@@ -178,6 +179,8 @@ def main(argv: list[str] | None = None) -> int:
             p.add_argument("--batch", type=int, default=30)
             p.add_argument("--length-budget", action=argparse.BooleanOptionalAction, default=False,
                            help="ask for at most N characters where a cue is short for its text")
+            p.add_argument("--sentences", action=argparse.BooleanOptionalAction, default=True,
+                           help="translate whole sentences and place them back over their cues")
             p.add_argument("--madlad-model", default=None)
             p.add_argument("--asr-backend", choices=["faster-whisper", "mlx-whisper"], default="faster-whisper")
             p.add_argument("--asr-model", default="large-v3-turbo")

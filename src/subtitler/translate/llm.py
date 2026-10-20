@@ -138,6 +138,7 @@ class Usage:
     budgeted: int = 0  # lines given a length budget
     merged: int = 0  # answers that covered several lines
     calls: list = field(default_factory=list)
+    rejected: list = field(default_factory=list)  # answers that did not cover the batch
 
     def add(self, timings: dict, usage: dict, wall: float) -> None:
         self.requests += 1
@@ -246,10 +247,11 @@ class LlmTranslator:
             got = parse_spans(text, numbers)
             if covers_all(got, numbers):
                 return {a - 1: (b - 1, t) for a, (b, t) in got.items()}
-            return None
-        single = parse_answer(text, numbers)
-        if len(single) == len(batch) and all(single.values()):
-            return {n - 1: (n - 1, t) for n, t in single.items()}
+        else:
+            single = parse_answer(text, numbers)
+            if len(single) == len(batch) and all(single.values()):
+                return {n - 1: (n - 1, t) for n, t in single.items()}
+        usage.rejected.append({"lines": f"{numbers[0]}-{numbers[-1]}", "answer": text[:2000]})
         return None
 
     def _batch(self, texts, idx, after, sys_msg, prev, usage, budgets) -> dict[int, tuple[int, str]]:

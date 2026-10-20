@@ -62,6 +62,33 @@ def finish(text: str, tgt: Lang, italic: bool) -> str:
     return f"<i>{body}</i>" if italic else body
 
 
+_SENTENCE_END = re.compile(r"[.?!…。？！\"”»」』)\]]\s*$")
+
+
+def sentence_groups(prep: Prepared, max_cues: int = 3, max_gap: float = 1.5) -> list[list[int]]:
+    """Consecutive cues one sentence runs over: a cue without closing punctuation goes
+    with the next. Two-speaker cues stay alone; a long pause ends a group."""
+    groups: list[list[int]] = []
+    cur: list[int] = []
+    for i, t in enumerate(prep.texts):
+        if "<br>" in t:
+            if cur:
+                groups.append(cur)
+                cur = []
+            groups.append([i])
+            continue
+        if cur and prep.cues[i].start - prep.cues[cur[-1]].end > max_gap:
+            groups.append(cur)
+            cur = []
+        cur.append(i)
+        if _SENTENCE_END.search(t) or len(cur) >= max_cues:
+            groups.append(cur)
+            cur = []
+    if cur:
+        groups.append(cur)
+    return groups
+
+
 def _fits_one_cue(text: str, tgt: Lang, seconds: float) -> bool:
     lim = wrap.limits(tgt.code)
     if "<br>" in text or seconds > 7.0:
@@ -70,18 +97,35 @@ def _fits_one_cue(text: str, tgt: Lang, seconds: float) -> bool:
     return len(lines) <= lim.lines and all(wrap.width(l) <= lim.chars_per_line for l in lines)
 
 
-def translate_cues(cues: list[vtt.Cue], src: Lang, tgt: Lang, translator, is_sdh: bool = False):
+def translate_cues(cues: list[vtt.Cue], src: Lang, tgt: Lang, translator, is_sdh: bool = False,
+                   sentences: bool = False):
     """(translated cues, usage, failures).
 
-    A translator answers per source cue with a text, or with (text, span) where
-    span > 1 covers that many cues (a sentence translated as a whole): it
+    A translator answers per source line with a text, or with (text, span) where
+    span > 1 covers that many lines (a sentence translated as a whole): it
     becomes one cue over their time when it fits one, else it is split back
     over them by their share of the source text.
+
+    sentences=True gives the translator whole sentences instead of cues (the
+    cues a sentence runs over joined): what comes back is placed by the same
+    rule, so no translation can drift into another cue's time.
     """
     from .madlad import split_by_share
 
     prep = prepare(cues, is_sdh)
-    if getattr(translator, "uses_durations", False):
+    if sentences:
+        groups = sentence_groups(prep)
+        texts = [" ".join(prep.texts[i] for i in g) for g in groups]
+        durations = [prep.cues[g[-1]].end - prep.cues[g[0]].start for g in groups]
+        if getattr(translator, "uses_durations", False):
+            g_outs, usage = translator.translate(texts, src, tgt, durations=durations)
+        else:
+            g_outs, usage = translator.translate(texts, src, tgt)
+        outs: list = [("", 0)] * len(prep.texts)
+        for g, o in zip(groups, g_outs):
+            t = o[0] if isinstance(o, tuple) else o
+            outs[g[0]] = (t, len(g))
+    elif getattr(translator, "uses_durations", False):
         outs, usage = translator.translate(prep.texts, src, tgt, durations=[c.duration for c in prep.cues])
     else:
         outs, usage = translator.translate(prep.texts, src, tgt)
@@ -104,8 +148,15 @@ def translate_cues(cues: list[vtt.Cue], src: Lang, tgt: Lang, translator, is_sdh
             if _fits_one_cue(text, tgt, end - start):
                 pieces = [(vtt.Cue(start, end, ""), text)]
             else:
-                parts = split_by_share(text.replace("<br>", " "), [max(1, len(t)) for t in texts], unspaced)
-                pieces = list(zip(group, parts))
+                parts = split_by_share(text.replace("<br>", " "), [max(1, len(t)) for t in texts], unspaced,
+                                       max_len=wrap.limits(tgt.code).chars_per_cue)
+                # A piece left empty gives its time to the piece before it.
+                pieces = []
+                for c, p in zip(group, parts):
+                    if p.strip():
+                        pieces.append((vtt.Cue(c.start, c.end, ""), p))
+                    elif pieces:
+                        pieces[-1][0].end = c.end
         for c, p in pieces:
             body = finish(p, tgt, italic)
             if not body:

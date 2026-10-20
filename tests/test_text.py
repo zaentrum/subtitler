@@ -123,6 +123,12 @@ def test_cues_drop_loops_and_hallucinations():
     assert texts.count("Go.") == 2
 
 
+def test_abbreviations_end_no_sentence_and_fillers_go():
+    ws = _words("From@0 Mr.@0.3 Brown.@0.6") + _words("Uh,@3.0 who@4.2 is@4.5 he?@4.8 Mm@6.5 -hmm.@6.7")
+    texts = [c.text.replace("\n", " ") for c in cues.build(ws, "en")]
+    assert texts == ["From Mr. Brown.", "Who is he?"]
+
+
 def test_collapse_repeats_inside_a_cue():
     assert cues.collapse_repeats("现在不试试试试试试试试试试试", "zh") == "现在不试试"
     assert cues.collapse_repeats("no no no no no no no no stop", "en") == "no no stop"
@@ -159,3 +165,9 @@ def test_split_by_share():
     assert split_by_share("eins zwei drei vier", [1, 1], False) == ["eins zwei", "drei vier"]
     pieces = split_by_share("我们走吧，明天再说", [4, 4], True)
     assert "".join(pieces) == "我们走吧，明天再说" and pieces[0].endswith("，")
+    # The source's 1:2 share would leave 98 characters for the second cue: the limit wins.
+    de = ("Im letzten Frühling hat der Gemeinderat einen ziemlich langweiligen, einstimmigen Plan "
+          "zur Reparatur der alten Brücke über den Fluss beschlossen.")
+    a, b = split_by_share(de, [26, 51], False, max_len=84)
+    assert len(a) <= 84 and len(b) <= 84
+    assert f"{a} {b}" == de

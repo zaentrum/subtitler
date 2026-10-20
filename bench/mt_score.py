@@ -32,7 +32,7 @@ def main() -> None:
     tags = sys.argv[1:] or sorted(p.name for p in mt_root.iterdir() if p.is_dir())
     out_json = cfg.scratch / "results" / "mt-scores.json"
     table = json.loads(out_json.read_text()) if out_json.exists() else {}
-    print("tag\tpair\tunits\tchrF\tBLEU\tlen\tover_cps%\tover_line%\tref_over_cps%\tgen_tok/s\twall_s")
+    print("tag\tpair\tunits\tchrF\tBLEU\tlen\tover_cps%\tover_line%\tref_over_cps%\tlate%\tearly%\tanchors r/p\tgen_tok/s\twall_s")
     for tag in tags:
         for f in sorted((mt_root / tag).glob("*.vtt")):
             stem = f.stem
@@ -56,6 +56,7 @@ def main() -> None:
                 is_sdh = src_file in t.sdh
             prep = prepare(vtt.window(vtt.read(src_file), *t.window), is_sdh)
             by_time = {(round(c.start, 3), round(c.end, 3)): s for c, s in zip(prep.cues, prep.texts)}
+            anch = metrics.anchor_agreement([c.with_text(s) for c, s in zip(prep.cues, prep.texts)], hyp)
             udir = cfg.out("mt-units", tag)
             with open(udir / f"{stem}.jsonl", "w", encoding="utf-8") as fh:
                 for h_text, r_text, u in units:
@@ -64,8 +65,9 @@ def main() -> None:
                                          "mt": h_text, "ref": r_text}, ensure_ascii=False) + "\n")
             st = wrap.stats(hyp, tgt.code).as_dict()
             rst = wrap.stats(ref, tgt.code).as_dict()
+            disp = metrics.displacement(hyp, ref, tgt.code)
             u = info.get("usage", {})
-            row = {"tag": tag, "title": name, "src": src_tag, "tgt": tgt_tag, **score.as_dict(),
+            row = {"tag": tag, "title": name, "src": src_tag, "tgt": tgt_tag, **score.as_dict(), **disp, **anch,
                    "over_cps_pct": st["over_cps_pct"], "over_line_pct": st["over_line_pct"],
                    "over_lines_pct": st["over_lines_pct"], "ref_over_cps_pct": rst["over_cps_pct"],
                    "cues": len(hyp), "failures": info.get("failures"), "gen_tok_s": u.get("gen_tok_s"),
@@ -74,8 +76,9 @@ def main() -> None:
                    "from_asr": info.get("from_asr", False), "model": info.get("model")}
             table[f"{tag}/{stem}"] = row
             print(f"{tag}\t{stem}\t{score.units}\t{score.chrf:.1f}\t{score.bleu:.1f}\t{score.len_ratio:.2f}\t"
-                  f"{st['over_cps_pct']}\t{st['over_line_pct']}\t{rst['over_cps_pct']}\t{u.get('gen_tok_s')}\t"
-                  f"{info.get('wall_s')}")
+                  f"{st['over_cps_pct']}\t{st['over_line_pct']}\t{rst['over_cps_pct']}\t{disp['late_pct']}\t"
+                  f"{disp['early_pct']}\t{anch['anchor_recall_pct']}/{anch['anchor_precision_pct']}\t"
+                  f"{u.get('gen_tok_s')}\t{info.get('wall_s')}")
     out_json.write_text(json.dumps(table, indent=1, ensure_ascii=False))
 
 

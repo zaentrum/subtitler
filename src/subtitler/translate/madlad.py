@@ -38,34 +38,43 @@ def _target_tag(tgt: Lang) -> str:
     return "<2zh>" if tgt.code == "zh" else f"<2{tgt.code}>"
 
 
-def split_by_share(text: str, shares: list[int], unspaced: bool) -> list[str]:
-    """Cut `text` into len(shares) pieces whose lengths follow `shares`."""
+def split_by_share(text: str, shares: list[int], unspaced: bool, max_len: int | None = None) -> list[str]:
+    """Cut `text` into len(shares) pieces: each within `max_len` characters if it can be,
+    lengths close to `shares`, cuts after punctuation where there is a choice."""
+    from itertools import combinations
+
     k = len(shares)
     if k == 1:
         return [text]
     units = list(text) if unspaced else text.split()
     joiner = "" if unspaced else " "
-    n, total = len(units), sum(shares) or 1
-    cuts, prev, acc = [], 0, 0
-    for j, s in enumerate(shares[:-1]):
+    n = len(units)
+    if n < k:
+        return units + [""] * (k - n)
+    # Characters up to each boundary, and where the shares would put the cuts.
+    lens = [len(u) + (0 if unspaced else 1) for u in units]
+    cum = [0]
+    for L in lens:
+        cum.append(cum[-1] + L)
+    total = cum[-1] or 1
+    targets, acc = [], 0
+    for s in shares[:-1]:
         acc += s
-        remaining = k - j - 1
-        lo, hi = prev + (1 if n - prev > remaining else 0), max(prev, n - remaining)
-        c = min(max(round(n * acc / total), lo), hi)
-        # Move the cut to a punctuation mark or space close by, if there is one.
-        reach = 3 if unspaced else 1
-        for d in sorted(range(-reach, reach + 1), key=abs):
-            m = c + d
-            if lo <= m <= hi and 0 < m <= n and units[m - 1][-1:] in _PUNCT:
-                c = m
-                break
-        cuts.append(c)
-        prev = c
-    pieces, p = [], 0
-    for c in cuts + [n]:
-        pieces.append(joiner.join(units[p:c]).strip())
-        p = c
-    return pieces
+        targets.append(total * acc / (sum(shares) or 1))
+    positions = range(1, n)
+    if len(positions) > 80:  # long texts: cuts near the targets only
+        positions = sorted({p for t in targets for p in range(1, n) if abs(cum[p] - t) < total * 0.25})
+    best, best_cost = None, None
+    for cuts in combinations(positions, k - 1):
+        bounds = (0, *cuts, n)
+        widths = [cum[b] - cum[a] for a, b in zip(bounds, bounds[1:])]
+        over = sum(max(0, w - max_len) for w in widths) if max_len else 0
+        dev = sum(abs(cum[c] - t) for c, t in zip(cuts, targets)) / total
+        punct = sum(1 for c in cuts if units[c - 1][-1:] in _PUNCT)
+        cost = over * 10 + dev * 100 - punct * 8
+        if best_cost is None or cost < best_cost:
+            best, best_cost = bounds, cost
+    return [joiner.join(units[a:b]).strip() for a, b in zip(best, best[1:])]
 
 
 class MadladTranslator:

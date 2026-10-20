@@ -32,6 +32,7 @@ def main() -> None:
     ap.add_argument("--after", type=int, default=4)
     ap.add_argument("--budget", action="store_true", help="mark lines that need condensing with [max N]")
     ap.add_argument("--spans", action="store_true", help="let the model translate a sentence over lines as one")
+    ap.add_argument("--sentences", action="store_true", help="translate whole sentences, placed back over their cues")
     ap.add_argument("--madlad-merge", action=argparse.BooleanOptionalAction, default=True)
     ap.add_argument("--beam", type=int, default=4)
     ap.add_argument("--threads", type=int, default=4)
@@ -46,12 +47,14 @@ def main() -> None:
         from subtitler.translate.llm import Client, LlmTranslator
 
         client = Client(a.llm_url)
-        tr = LlmTranslator(client, batch=a.batch, after=a.after, length_budget=a.budget, spans=a.spans)
+        tr = LlmTranslator(client, batch=a.batch, after=a.after, length_budget=a.budget,
+                           spans=a.spans and not a.sentences)
         model = client.model_id()
     else:
         from subtitler.translate.madlad import MadladTranslator
 
-        tr = MadladTranslator(str(cfg.models["madlad"]), threads=a.threads, beam_size=a.beam, merge=a.madlad_merge)
+        tr = MadladTranslator(str(cfg.models["madlad"]), threads=a.threads, beam_size=a.beam,
+                              merge=a.madlad_merge and not a.sentences)
         model = tr.name
     print(f"# {a.engine} {model} tag={a.tag}", flush=True)
 
@@ -68,7 +71,8 @@ def main() -> None:
         if not a.full and t.window:
             cues = vtt.window(cues, *t.window)
         t0 = time.perf_counter()
-        res, usage, failures = translate_cues(cues, Lang.parse(src_tag), Lang.parse(tgt_tag), tr, is_sdh=is_sdh)
+        res, usage, failures = translate_cues(cues, Lang.parse(src_tag), Lang.parse(tgt_tag), tr, is_sdh=is_sdh,
+                                              sentences=a.sentences)
         wall = time.perf_counter() - t0
         stem = f"{name}.{src_tag}-{tgt_tag}"
         vtt.write(out / f"{stem}.vtt", res, notes=[f"made by subtitler spike: translated {src_tag}->{tgt_tag} by {model}"])
@@ -78,7 +82,9 @@ def main() -> None:
                 "asr_dir": str(Path(a.from_asr).resolve()) if a.from_asr else None, "cues_in": len(cues),
                 "cues_out": len(res), "failures": failures, "wall_s": round(wall, 2), "usage": u,
                 "full": a.full}
-        (out / f"{stem}.json").write_text(json.dumps(info, indent=1))
+        if getattr(usage, "rejected", None):
+            info["rejected"] = usage.rejected
+        (out / f"{stem}.json").write_text(json.dumps(info, indent=1, ensure_ascii=False))
         print(f"{stem}\tcues={len(cues)}\tout={len(res)}\tfail={failures}\twall={wall:.1f}s\t"
               f"gen={u.get('gen_tok_s')}tok/s\tcompl={u.get('completion_tokens', u.get('output_tokens'))}"
               f"\tretries={u.get('retries', '-')}", flush=True)

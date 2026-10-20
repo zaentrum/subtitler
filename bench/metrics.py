@@ -245,5 +245,68 @@ def score_mt(hyp: list[vtt.Cue], ref: list[vtt.Cue], lang: str) -> tuple[MtScore
                     len_ratio=hc / rc), pairs)
 
 
+def displacement(hyp: list[vtt.Cue], ref: list[vtt.Cue], lang: str, margin: float = 10.0) -> dict:
+    """How often a translated cue reads like the human subtitle of its neighbour rather than its own.
+
+    For each cue: sentence chrF against the human text over its own time,
+    over the next cue's time and over the previous cue's. "late" counts the
+    cues that match the next cue's text better by `margin` points (the
+    translation runs one cue behind the speech), "early" the previous one's.
+    An aligned translation sits at the noise floor; the two together say how
+    much text a viewer sees at the wrong time.
+    """
+    import sacrebleu
+
+    def text_at(a: float, b: float) -> str:
+        return unit_text(ref, [k for k, r in enumerate(ref) if min(r.end, b) - max(r.start, a) > 0.15], lang)
+
+    late = early = n = 0
+    for i in range(1, len(hyp) - 1):
+        h = unit_text(hyp, [i], lang)
+        own = text_at(hyp[i].start, hyp[i].end)
+        nxt = text_at(hyp[i + 1].start, hyp[i + 1].end)
+        prv = text_at(hyp[i - 1].start, hyp[i - 1].end)
+        if not h or not own or own in (nxt, prv):
+            continue
+        n += 1
+        s_own = sacrebleu.sentence_chrf(h, [own]).score
+        if nxt and sacrebleu.sentence_chrf(h, [nxt]).score > s_own + margin:
+            late += 1
+        if prv and sacrebleu.sentence_chrf(h, [prv]).score > s_own + margin:
+            early += 1
+    return {"late_pct": round(100 * late / max(1, n), 1), "early_pct": round(100 * early / max(1, n), 1),
+            "cues_checked": n}
+
+
+_DIGITS = re.compile(r"\d+")
+
+
+def anchors(text: str) -> set[str]:
+    """What survives translation unchanged: question marks and numbers."""
+    t = unicodedata.normalize("NFKC", text)
+    out = {"?"} if "?" in t else set()
+    return out | set(_DIGITS.findall(t))
+
+
+def anchor_agreement(src: list[vtt.Cue], hyp: list[vtt.Cue]) -> dict:
+    """Share of question marks and numbers found in the translated cue of the source cue that has them.
+
+    Over the time of each translated cue, the source cues there: an anchor in
+    the source should be in the translation at the same time, and one in the
+    translation should come from the source there. A translation that runs
+    a cue behind loses both.
+    """
+    hit = total_src = total_hyp = hit_hyp = 0
+    for h in hyp:
+        s_text = " ".join(vtt.plain(s.text) for s in src if min(s.end, h.end) - max(s.start, h.start) > 0.1)
+        a_src, a_hyp = anchors(s_text), anchors(vtt.plain(h.text))
+        total_src += len(a_src)
+        hit += len(a_src & a_hyp)
+        total_hyp += len(a_hyp)
+        hit_hyp += len(a_hyp & a_src)
+    return {"anchor_recall_pct": round(100 * hit / max(1, total_src), 1),
+            "anchor_precision_pct": round(100 * hit_hyp / max(1, total_hyp), 1), "anchors": total_src}
+
+
 def char_counter(text: str) -> Counter:
     return Counter(ch for ch in text if not ch.isspace())

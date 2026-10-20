@@ -16,6 +16,10 @@ ARG BASE=
 # llama.cpp from a tagged release, built for the RTX 3090 (sm_86) on the
 # runtime's own CUDA and Ubuntu, so the binaries need no newer CUDA or glibc
 # than the runtime has. The flags follow llama.cpp's own CUDA image.
+# Not built yet: llama.cpp's own CI builds with CUDA 12.4 and later. Should
+# 12.3 fail, the release's prebuilt ubuntu-cuda-12.8 binaries run on this
+# runtime with NVIDIA's CUDA 12 runtime wheel (nvidia-cuda-runtime-cu12) on
+# LD_LIBRARY_PATH next to the cuBLAS one; driver 580 takes CUDA 12.x.
 FROM ${BASE}nvidia/cuda:12.3.2-devel-ubuntu22.04 AS llama
 ARG LLAMA_CPP_TAG=b11430
 ARG CUDA_ARCHITECTURES=86
