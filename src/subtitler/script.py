@@ -39,6 +39,26 @@ def convert(text: str, config: str = "t2s") -> str:
     return _cc(config).convert(text)
 
 
+@lru_cache(maxsize=1)
+def _jieba():
+    try:
+        import logging
+
+        import jieba
+
+        jieba.setLogLevel(logging.WARNING)
+        return jieba
+    except ImportError:
+        return None
+
+
+def zh_words(text: str) -> list[str]:
+    """Chinese text cut into words (jieba, MIT), so lines break between words;
+    single characters when jieba is not installed."""
+    j = _jieba()
+    return [w for w in j.cut(text)] if j else list(text)
+
+
 def han_count(text: str) -> int:
     return len(_HAN.findall(text))
 

@@ -13,6 +13,8 @@ asr = ["faster-whisper>=1.1", "numpy"]
 mlx = ["mlx-whisper>=0.4"]
 # The dedicated translation model (MADLAD-400 on CTranslate2).
 mt = ["ctranslate2>=4.5", "sentencepiece"]
+# Chinese line breaks between words (MIT).
+zh = ["jieba>=0.42"]
 # Scores of the bench.
 eval = ["jiwer>=3", "sacrebleu>=2.4", "whisper-normalizer"]
 comet = ["unbabel-comet>=2.2"]

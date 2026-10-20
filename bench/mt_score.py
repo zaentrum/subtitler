@@ -55,13 +55,16 @@ def main() -> None:
                 src_file = t.subs[src_tag]
                 is_sdh = src_file in t.sdh
             prep = prepare(vtt.window(vtt.read(src_file), *t.window), is_sdh)
-            by_time = {(round(c.start, 3), round(c.end, 3)): s for c, s in zip(prep.cues, prep.texts)}
             anch = metrics.anchor_agreement([c.with_text(s) for c, s in zip(prep.cues, prep.texts)], hyp)
             udir = cfg.out("mt-units", tag)
             with open(udir / f"{stem}.jsonl", "w", encoding="utf-8") as fh:
                 for h_text, r_text, u in units:
-                    srcs = [by_time.get((round(hyp[i].start, 3), round(hyp[i].end, 3)), "") for i in u.hyp]
-                    fh.write(json.dumps({"src": " ".join(s.replace(" <br> ", " ") for s in srcs if s),
+                    # The source cues under the unit's translated cues (a translated cue may
+                    # cover a whole sentence of source cues, and its end may have moved).
+                    spans = [(hyp[i].start, hyp[i].end) for i in u.hyp]
+                    srcs = [s for c, s in zip(prep.cues, prep.texts)
+                            if any(min(c.end, b) - max(c.start, a) > 0.1 for a, b in spans)]
+                    fh.write(json.dumps({"src": " ".join(s.replace(" <br> ", " ") for s in srcs),
                                          "mt": h_text, "ref": r_text}, ensure_ascii=False) + "\n")
             st = wrap.stats(hyp, tgt.code).as_dict()
             rst = wrap.stats(ref, tgt.code).as_dict()

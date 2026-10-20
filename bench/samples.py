@@ -11,7 +11,9 @@ results/samples/mt/<title>.<src>-<tgt>.md. Transcriptions get the same
 
 from __future__ import annotations
 
+import json
 import sys
+from pathlib import Path
 
 import common
 from subtitler import vtt
@@ -30,15 +32,24 @@ def overlapping(cues: list[vtt.Cue], start: float, end: float, share: float = 0.
 
 def main() -> None:
     cfg = common.load()
-    tags = sys.argv[1:]
+    args = sys.argv[1:]
+    folder = "mt"
+    if args[:1] == ["--out"]:
+        folder, args = args[1], args[2:]
+    tags = args
     root = cfg.scratch / "results"
-    out = cfg.out("samples", "mt")
+    out = cfg.out("samples", folder)
     for f in sorted((root / "mt" / tags[0]).glob("*.vtt")):
         name, pair = f.stem.split(".", 1)
         src_tag, tgt_tag = common.split_pair(pair)
         t = cfg.titles[name]
         tgt = Lang.parse(tgt_tag)
-        src_path = t.subs[src_tag]
+        info_path = f.with_suffix(".json")
+        info = json.loads(info_path.read_text()) if info_path.exists() else {}
+        if info.get("from_asr"):  # the source is the transcription, not the title's subtitle
+            src_path = Path(info["asr_dir"]) / f"{name}.vtt"
+        else:
+            src_path = t.subs[src_tag]
         prep = prepare(vtt.window(vtt.read(src_path), *t.window), src_path in t.sdh)
         systems = {}
         for tag in tags:
@@ -48,8 +59,10 @@ def main() -> None:
         ref_path = t.subs.get(tgt.tag)
         ref = vtt.window(vtt.read(ref_path), *t.window) if ref_path else []
         k0 = len(prep.cues) // 3
-        lines = [f"# {name}: {src_tag} → {tgt_tag}", "",
-                 f"Source: the title's own {src_tag} subtitle{' (SDH, cleaned)' if src_path in t.sdh else ''}; "
+        what = (f"the transcription ({src_tag})" if info.get("from_asr") else
+                f"the title's own {src_tag} subtitle{' (SDH, cleaned)' if src_path in t.sdh else ''}")
+        lines = [f"# {name}: {src_tag} → {tgt_tag}{' (from the transcription)' if info.get('from_asr') else ''}", "",
+                 f"Source: {what}; "
                  f"20 cues from {vtt.timestamp(prep.cues[k0].start)}. The last column is the title's human "
                  f"{tgt_tag} subtitle over the same time (‖ between its cues).", ""]
         head = ["time", f"source ({src_tag})"] + list(systems) + [f"human {tgt_tag}"]

@@ -40,17 +40,27 @@ def _target_tag(tgt: Lang) -> str:
 
 def split_by_share(text: str, shares: list[int], unspaced: bool, max_len: int | None = None) -> list[str]:
     """Cut `text` into len(shares) pieces: each within `max_len` characters if it can be,
-    lengths close to `shares`, cuts after punctuation where there is a choice."""
-    from itertools import combinations
+    lengths close to `shares`, cuts after punctuation (and Chinese particles) where there is
+    a choice, no piece of a word or two: a piece may stay empty instead (its cue's time then
+    goes to the piece before)."""
+    from itertools import combinations_with_replacement
+
+    from ..wrap import _AFTER_ZH, _NO_LINE_START
 
     k = len(shares)
     if k == 1:
         return [text]
-    units = list(text) if unspaced else text.split()
+    if unspaced:
+        from ..script import zh_words
+
+        units = zh_words(text)  # words in Chinese; characters elsewhere (no segmenter)
+    else:
+        units = text.split()
     joiner = "" if unspaced else " "
     n = len(units)
-    if n < k:
-        return units + [""] * (k - n)
+    min_len = 4 if unspaced else 10
+    if n < k and not unspaced:
+        return [text] + [""] * (k - 1)
     # Characters up to each boundary, and where the shares would put the cuts.
     lens = [len(u) + (0 if unspaced else 1) for u in units]
     cum = [0]
@@ -61,17 +71,29 @@ def split_by_share(text: str, shares: list[int], unspaced: bool, max_len: int | 
     for s in shares[:-1]:
         acc += s
         targets.append(total * acc / (sum(shares) or 1))
-    positions = range(1, n)
-    if len(positions) > 80:  # long texts: cuts near the targets only
-        positions = sorted({p for t in targets for p in range(1, n) if abs(cum[p] - t) < total * 0.25})
+    positions = list(range(0, n + 1))
+    if len(positions) > 60:  # long texts: cuts near the targets only (and the ends)
+        positions = sorted({0, n} | {p for t in targets for p in range(1, n) if abs(cum[p] - t) < total * 0.25})
     best, best_cost = None, None
-    for cuts in combinations(positions, k - 1):
+    for cuts in combinations_with_replacement(positions, k - 1):
         bounds = (0, *cuts, n)
         widths = [cum[b] - cum[a] for a, b in zip(bounds, bounds[1:])]
+        if widths[0] == 0:  # the first cue keeps some text
+            continue
         over = sum(max(0, w - max_len) for w in widths) if max_len else 0
         dev = sum(abs(cum[c] - t) for c, t in zip(cuts, targets)) / total
-        punct = sum(1 for c in cuts if units[c - 1][-1:] in _PUNCT)
-        cost = over * 10 + dev * 100 - punct * 8
+        cost = over * 10 + dev * 100
+        for w in widths[1:]:
+            cost += 15 if w == 0 else (40 if w < min_len else 0)
+        for c in cuts:
+            if 0 < c < n:
+                prev, nxt = units[c - 1][-1:], units[c][:1]
+                if prev in _PUNCT:
+                    cost -= 8
+                elif unspaced and prev in _AFTER_ZH:
+                    cost -= 4
+                if unspaced and nxt in _NO_LINE_START:
+                    cost += 40
         if best_cost is None or cost < best_cost:
             best, best_cost = bounds, cost
     return [joiner.join(units[a:b]).strip() for a, b in zip(best, best[1:])]

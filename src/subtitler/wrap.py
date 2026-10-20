@@ -106,8 +106,18 @@ def _split_unspaced(text: str, lim: Limits, lang: str = "zh") -> list[str]:
     if width(t) <= lim.chars_per_line:
         return [t]
     after = _AFTER_JA if lang == "ja" else _AFTER_ZH
+    allowed = None
+    if lang in ("zh", "yue"):
+        from .script import zh_words
+
+        allowed, pos = set(), 0
+        for w in zh_words(t):
+            pos += len(w)
+            allowed.add(pos)
     best = None
     for i in range(1, len(t)):
+        if allowed is not None and i not in allowed:
+            continue
         a, b = t[:i].strip(), t[i:].strip()
         if not a or not b:
             continue

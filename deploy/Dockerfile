@@ -63,7 +63,7 @@ COPY pyproject.toml README.md /opt/subtitler/
 COPY src /opt/subtitler/src
 RUN python3 -m venv /opt/venv \
     && /opt/venv/bin/pip install --upgrade pip \
-    && /opt/venv/bin/pip install "/opt/subtitler[asr,mt,eval]" "nvidia-cublas-cu12==12.*" "nvidia-cudnn-cu12==9.*"
+    && /opt/venv/bin/pip install "/opt/subtitler[asr,mt,eval,zh]" "nvidia-cublas-cu12==12.*" "nvidia-cudnn-cu12==9.*"
 COPY bench /opt/subtitler/bench
 COPY --from=llama /out/ /usr/local/bin/
 COPY --from=ffmpeg /opt/ffmpeg/lib /opt/ffmpeg/lib

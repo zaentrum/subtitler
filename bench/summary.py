@@ -51,25 +51,24 @@ def main() -> None:
               f"{c if c is not None else '-'} | {v['len_ratio']:.2f} | {v['over_cps_pct']} / "
               f"{v.get('over_cps_retimed_pct', '-')} ({v['ref_over_cps_pct']}) | {v['over_line_pct']} |")
 
-    # Means per system over the pairs every compared system has.
-    tags = sorted({v["tag"] for v in mt.values()})
+    # Two systems compared over the pairs both translated.
     pairs = {}
     for k, v in mt.items():
         pairs.setdefault((v["title"], v["src"], v["tgt"]), {})[v["tag"]] = (v, comet.get(k, {}).get("comet"))
-    print("\n### Means per system over the pairs all of them translated\n")
-    for group in (tags,):
-        common_pairs = [p for p, d in pairs.items() if all(t in d for t in group)]
-        if not common_pairs:
+    print("\n### Systems compared over the pairs both translated\n")
+    print("| A | B | pairs | chrF A / B | COMET A / B | over reading speed % re-timed A / B |")
+    print("|---|---|---|---|---|---|")
+    for a, b in [("qwen2.5-7b", "qwen3.5-9b-sent"), ("madlad-3b-sent", "qwen3.5-9b-sent"),
+                 ("qwen3.5-9b", "qwen3.5-9b-sent"), ("qwen3.5-9b-sent", "qwen3.5-9b-sent-budget"),
+                 ("qwen3.5-9b-sent", "qwen3.5-9b-sent-from-asr"), ("qwen3.5-9b-sent", "qwen3.8-27b-sent")]:
+        both = [p for p, d in pairs.items() if a in d and b in d and d[a][1] is not None and d[b][1] is not None]
+        if not both:
             continue
-        print(f"Pairs: {len(common_pairs)}\n")
-        print("| system | chrF | COMET | over reading speed % |")
-        print("|---|---|---|---|")
-        for t in group:
-            ch = [pairs[p][t][0]["chrf"] for p in common_pairs]
-            co = [pairs[p][t][1] for p in common_pairs if pairs[p][t][1] is not None]
-            cp = [pairs[p][t][0]["over_cps_pct"] for p in common_pairs]
-            print(f"| {t} | {sum(ch) / len(ch):.1f} | {(sum(co) / len(co)) if co else float('nan'):.4f} | "
-                  f"{sum(cp) / len(cp):.1f} |")
+        mean = lambda xs: sum(xs) / len(xs)
+        ch = [mean([pairs[p][t][0]["chrf"] for p in both]) for t in (a, b)]
+        co = [mean([pairs[p][t][1] for p in both]) for t in (a, b)]
+        cp = [mean([pairs[p][t][0].get("over_cps_retimed_pct", pairs[p][t][0]["over_cps_pct"]) for p in both]) for t in (a, b)]
+        print(f"| {a} | {b} | {len(both)} | {ch[0]:.1f} / {ch[1]:.1f} | {co[0]:.4f} / {co[1]:.4f} | {cp[0]:.1f} / {cp[1]:.1f} |")
 
     if opencc:
         print("\n## Script conversion (OpenCC, whole tracks)\n")
