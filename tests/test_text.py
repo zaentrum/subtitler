@@ -67,12 +67,12 @@ def test_zh_style_and_wrap():
 
 
 def test_reading_time_extends_fast_cues_into_the_gap_only():
-    text = "Ich wusste nicht, welchen Zug du nehmen würdest."  # 49 characters: 2.9 s at 17 a second
+    text = "Ich wusste nicht, welchen Zug du nehmen würdest."  # 48 characters: 2.8 s at 17 a second
     cs = [vtt.Cue(0.0, 2.0, text), vtt.Cue(2.5, 3.0, "Ja."), vtt.Cue(10.0, 11.0, text)]
     out = wrap.reading_time(cs, "de")
     assert abs(out[0].end - 2.417) < 1e-3  # up to the next cue, 2 frames before it
     assert out[1].end == 3.0  # "Ja." is readable in 0.5 s
-    assert abs(out[2].end - 12.0) < 1e-3  # needs 2.9 s, gets the most: one second more
+    assert abs(out[2].end - 12.0) < 1e-3  # needs 2.8 s, gets the most: one second more
     assert all(a.end <= b.start for a, b in zip(out, out[1:]))
 
 
