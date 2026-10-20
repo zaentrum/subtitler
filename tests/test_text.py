@@ -123,6 +123,12 @@ def test_cues_drop_loops_and_hallucinations():
     assert texts.count("Go.") == 2
 
 
+def test_collapse_repeats_inside_a_cue():
+    assert cues.collapse_repeats("现在不试试试试试试试试试试试", "zh") == "现在不试试"
+    assert cues.collapse_repeats("no no no no no no no no stop", "en") == "no no stop"
+    assert cues.collapse_repeats("no, no, no, stop", "en") == "no, no, no, stop"
+
+
 def test_prepare_and_finish_markers():
     cs = [vtt.Cue(0, 1, "-Yes.\n-No."), vtt.Cue(1, 2, "<i>Far away\nfrom here.</i>"), vtt.Cue(2, 3, "[music]")]
     p = prepare(cs, is_sdh=True)
@@ -134,6 +140,19 @@ def test_prepare_and_finish_markers():
 def test_parse_answer():
     text = "Here you go:\n3| Eins\n4｜Zwei\n5: Drei\n3| doppelt"
     assert parse_answer(text, [3, 4, 5]) == {3: "Eins", 4: "Zwei", 5: "Drei"}
+    assert parse_answer("7 [max 20]| Kurz.", [7]) == {7: "Kurz."}
+
+
+def test_length_budget_only_where_the_cue_is_short():
+    from subtitler.translate.llm import budget
+
+    en, de, zh = langs.Lang.parse("en"), langs.Lang.parse("de"), langs.Lang.parse("zh-Hans")
+    long_text = "I had no idea which of the two trains you took, so I waited at both of the stations."
+    assert budget(long_text, 2.0, en, de) == 34  # 2 s at 17 characters a second
+    assert budget(long_text, 6.0, en, de) == 84  # time enough, but more than two lines
+    assert budget("I had no idea which train you took.", 6.0, en, de) is None
+    assert budget("Yes.", 0.5, en, de) is None
+    assert budget(long_text, 2.0, en, zh) == 18  # 9 a second, at least 6
 
 
 def test_split_by_share():

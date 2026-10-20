@@ -62,16 +62,57 @@ def finish(text: str, tgt: Lang, italic: bool) -> str:
     return f"<i>{body}</i>" if italic else body
 
 
+def _fits_one_cue(text: str, tgt: Lang, seconds: float) -> bool:
+    lim = wrap.limits(tgt.code)
+    if "<br>" in text or seconds > 7.0:
+        return False
+    lines = wrap.rewrap(text, tgt.code).split("\n")
+    return len(lines) <= lim.lines and all(wrap.width(l) <= lim.chars_per_line for l in lines)
+
+
 def translate_cues(cues: list[vtt.Cue], src: Lang, tgt: Lang, translator, is_sdh: bool = False):
-    """(translated cues, usage, failures): one cue per source cue that has text."""
+    """(translated cues, usage, failures).
+
+    A translator answers per source cue with a text, or with (text, span) where
+    span > 1 covers that many cues (a sentence translated as a whole): it
+    becomes one cue over their time when it fits one, else it is split back
+    over them by their share of the source text.
+    """
+    from .madlad import split_by_share
+
     prep = prepare(cues, is_sdh)
-    outs, usage = translator.translate(prep.texts, src, tgt)
-    result, failures = [], 0
-    for c, src_text, o, it in zip(prep.cues, prep.texts, outs, prep.italic):
-        body = finish(o, tgt, it)
-        if not body:
-            failures += 1
+    if getattr(translator, "uses_durations", False):
+        outs, usage = translator.translate(prep.texts, src, tgt, durations=[c.duration for c in prep.cues])
+    else:
+        outs, usage = translator.translate(prep.texts, src, tgt)
+    result, failures, merged = [], 0, 0
+    unspaced = tgt.code in ("zh", "yue", "ja")
+    i, n = 0, len(prep.cues)
+    while i < n:
+        text, span = outs[i] if isinstance(outs[i], tuple) else (outs[i], 1)
+        if span == 0:  # taken in by an earlier answer
+            i += 1
             continue
-        nc = vtt.Cue(c.start, c.end, body, meta={"source": src_text})
-        result.append(nc)
+        span = max(1, min(span, n - i))
+        group, texts = prep.cues[i:i + span], prep.texts[i:i + span]
+        italic = all(prep.italic[i:i + span])
+        if span == 1:
+            pieces = [(group[0], text)]
+        else:
+            merged += 1
+            start, end = group[0].start, group[-1].end
+            if _fits_one_cue(text, tgt, end - start):
+                pieces = [(vtt.Cue(start, end, ""), text)]
+            else:
+                parts = split_by_share(text.replace("<br>", " "), [max(1, len(t)) for t in texts], unspaced)
+                pieces = list(zip(group, parts))
+        for c, p in pieces:
+            body = finish(p, tgt, italic)
+            if not body:
+                failures += 1
+                continue
+            result.append(vtt.Cue(c.start, c.end, body, meta={"source": " ".join(texts)}))
+        i += span
+    if hasattr(usage, "merged"):
+        usage.merged = merged
     return result, usage, failures

@@ -25,7 +25,8 @@ from dataclasses import dataclass, field
 
 from ..langs import Lang
 
-_LINE = re.compile(r"^\s*(\d+)\s*[|｜:：.)]\s?(.*)$")
+_LINE = re.compile(r"^\s*(\d+)(?:\s*[-–]\s*(\d+))?\s*(?:\[[^\]]*\]\s*)?[|｜:：.)]\s?(.*)$")
+MAX_SPAN = 3  # lines one answer may cover
 
 _TARGET_RULES = {
     "de": ("Use 'du' between friends, family and children and 'Sie' with strangers, superiors and in "
@@ -37,7 +38,35 @@ _TARGET_RULES = {
 }
 
 
-def system_prompt(src: Lang, tgt: Lang) -> str:
+# Characters a language needs for the same content, English = 1 (subtitle
+# text; rough, for deciding which lines need a length budget).
+_CHAR_RATIO = {"en": 1.0, "de": 1.15, "fr": 1.1, "it": 1.05, "es": 1.05, "pt": 1.05, "nl": 1.1,
+               "zh": 0.33, "yue": 0.35, "ja": 0.45, "ko": 0.5, "ru": 1.05}
+
+BUDGET_RULE = ("- A line marked [max N] has little time on screen: translate it in at most N characters. "
+               "Condense it as a subtitler would, keep what matters. Do not repeat the marker.\n")
+
+
+def budget(text: str, duration: float, src: Lang, tgt: Lang) -> int | None:
+    """The characters a cue's translation may have at the target's reading speed, if it is likely to need fewer."""
+    from ..wrap import limits
+
+    lim = limits(tgt.code)
+    allowed = max(6 if tgt.code in ("zh", "yue", "ja") else 14, int(duration * lim.cps))
+    allowed = min(allowed, lim.chars_per_cue)
+    expected = len(text.replace(" <br> ", " ")) * _CHAR_RATIO.get(tgt.code, 1.0) / _CHAR_RATIO.get(src.code, 1.0)
+    return allowed if expected > allowed * 1.1 else None
+
+
+SPAN_RULE = ("- Keep each line's content in that line. When a sentence runs over several lines and reads "
+             "better translated as a whole, translate those lines together as one answer numbered with the "
+             "range, like \"12-13| translation\" (at most three lines). Never move words from one line into "
+             "another line's answer.\n")
+NO_SPAN_RULE = ("- Keep each line's content in that line. Do not merge lines or move words between them, even "
+                "when a sentence runs over several lines.\n")
+
+
+def system_prompt(src: Lang, tgt: Lang, with_budget: bool = False, spans: bool = False) -> str:
     rules = _TARGET_RULES.get(tgt.tag) or _TARGET_RULES.get(tgt.code, "")
     return (
         f"You are a professional subtitle translator. You translate the subtitles of a film or TV episode "
@@ -45,18 +74,20 @@ def system_prompt(src: Lang, tgt: Lang) -> str:
         "Rules:\n"
         "- Translate every numbered line. Answer with the same numbers, one line each, as \"N| translation\". "
         "Write nothing else: no notes, no explanations, no source text.\n"
-        "- Keep each line's content in that line. Do not merge lines or move words between them, even when a "
-        "sentence runs over several lines.\n"
+        + (SPAN_RULE if spans else NO_SPAN_RULE) +
         "- Write natural spoken language as a professional subtitler would: concise and quick to read. "
         "Condense slightly rather than add words.\n"
         "- Keep names as they are. Keep the marker <br> where it appears: it separates two speakers.\n"
+        + (BUDGET_RULE if with_budget else "") +
         f"- {rules}\n"
     )
 
 
-def user_prompt(batch: list[tuple[int, str]], after: list[tuple[int, str]]) -> str:
+def user_prompt(batch: list[tuple[int, str]], after: list[tuple[int, str]],
+                budgets: dict[int, int] | None = None) -> str:
+    budgets = budgets or {}
     lines = ["Translate these lines:"]
-    lines += [f"{n}| {t}" for n, t in batch]
+    lines += [f"{n} [max {budgets[n]}]| {t}" if n in budgets else f"{n}| {t}" for n, t in batch]
     if after:
         lines.append("")
         lines.append("The lines that follow, for context only (do not translate them):")
@@ -64,17 +95,34 @@ def user_prompt(batch: list[tuple[int, str]], after: list[tuple[int, str]]) -> s
     return "\n".join(lines)
 
 
-def parse_answer(text: str, wanted: list[int]) -> dict[int, str]:
+def parse_spans(text: str, wanted: list[int]) -> dict[int, tuple[int, str]]:
+    """{first line: (last line, translation)}; a range covers consecutive lines."""
     want = set(wanted)
-    out: dict[int, str] = {}
+    out: dict[int, tuple[int, str]] = {}
     for line in text.splitlines():
         m = _LINE.match(line)
         if not m:
             continue
-        n = int(m.group(1))
-        if n in want and n not in out:
-            out[n] = m.group(2).strip()
+        a = int(m.group(1))
+        b = int(m.group(2)) if m.group(2) else a
+        if a in want and b in want and a <= b <= a + MAX_SPAN - 1 and a not in out:
+            out[a] = (b, m.group(3).strip())
     return out
+
+
+def covers_all(spans: dict[int, tuple[int, str]], wanted: list[int]) -> bool:
+    """Every wanted line in exactly one answer, every answer non-empty."""
+    seen: list[int] = []
+    for a, (b, t) in spans.items():
+        if not t:
+            return False
+        seen += range(a, b + 1)
+    return sorted(seen) == sorted(wanted)
+
+
+def parse_answer(text: str, wanted: list[int]) -> dict[int, str]:
+    """One translation per line number (answers covering a range are left out)."""
+    return {a: t for a, (b, t) in parse_spans(text, wanted).items() if a == b}
 
 
 @dataclass
@@ -87,6 +135,8 @@ class Usage:
     wall_s: float = 0.0
     retries: int = 0
     fallbacks: int = 0
+    budgeted: int = 0  # lines given a length budget
+    merged: int = 0  # answers that covered several lines
     calls: list = field(default_factory=list)
 
     def add(self, timings: dict, usage: dict, wall: float) -> None:
@@ -107,7 +157,8 @@ class Usage:
         return {"requests": self.requests, "prompt_tokens": self.prompt_tokens,
                 "completion_tokens": self.completion_tokens, "gen_tok_s": round(gen, 1),
                 "prompt_tok_s": round(pp, 1), "wall_s": round(self.wall_s, 2),
-                "retries": self.retries, "fallbacks": self.fallbacks}
+                "retries": self.retries, "fallbacks": self.fallbacks, "budgeted": self.budgeted,
+                "merged": self.merged}
 
 
 class Client:
@@ -141,52 +192,82 @@ class Client:
 
 
 class LlmTranslator:
+    """translate() returns, per text, (translation, span): span 1 for a line of its own, n for the
+    first of n lines translated together, 0 for the lines a span took in."""
+
+    uses_durations = True
+
     def __init__(self, client: Client, batch: int = 30, after: int = 4, temperature: float = 0.0,
-                 extra: dict | None = None):
+                 extra: dict | None = None, length_budget: bool = False, spans: bool = False):
         self.client = client
         self.batch = batch
         self.after = after
         self.temperature = temperature
         self.extra = extra or {}
+        self.length_budget = length_budget
+        self.spans = spans
 
-    def translate(self, texts: list[str], src: Lang, tgt: Lang) -> tuple[list[str], Usage]:
-        """One translation per text, in order. `texts` are single-line cue texts."""
+    def translate(self, texts: list[str], src: Lang, tgt: Lang,
+                  durations: list[float] | None = None) -> tuple[list[tuple[str, int]], Usage]:
         usage = Usage()
-        sys_msg = {"role": "system", "content": system_prompt(src, tgt)}
-        out: list[str | None] = [None] * len(texts)
+        sys_msg = {"role": "system", "content": system_prompt(src, tgt, self.length_budget, self.spans)}
+        budgets: dict[int, int] = {}
+        if self.length_budget and durations:
+            for i, (t, d) in enumerate(zip(texts, durations)):
+                b = budget(t, d, src, tgt)
+                if b is not None:
+                    budgets[i + 1] = b
+        usage.budgeted = len(budgets)
+        out: list[tuple[str, int]] = [("", 1)] * len(texts)
         prev: list[dict] = []
         for b0 in range(0, len(texts), self.batch):
             idx = list(range(b0, min(len(texts), b0 + self.batch)))
             after = list(range(idx[-1] + 1, min(len(texts), idx[-1] + 1 + self.after)))
-            got = self._batch(texts, idx, after, sys_msg, prev, usage)
+            got = self._batch(texts, idx, after, sys_msg, prev, usage, budgets)
+            answer = []
             for i in idx:
-                out[i] = got.get(i)
+                if i in got:
+                    last, t = got[i]
+                    out[i] = (t, last - i + 1)
+                    for k in range(i + 1, last + 1):
+                        out[k] = ("", 0)
+                    answer.append(f"{i + 1}-{last + 1}| {t}" if last > i else f"{i + 1}| {t}")
             # The batch just done becomes the earlier turn of the next request.
-            prev = [{"role": "user", "content": user_prompt([(i + 1, texts[i]) for i in idx], [])},
-                    {"role": "assistant", "content": "\n".join(f"{i + 1}| {out[i] or ''}" for i in idx)}]
-        return [o if o is not None else "" for o in out], usage
+            prev = [{"role": "user", "content": user_prompt([(i + 1, texts[i]) for i in idx], [], budgets)},
+                    {"role": "assistant", "content": "\n".join(answer)}]
+        return out, usage
 
-    def _batch(self, texts, idx, after, sys_msg, prev, usage, depth=0) -> dict[int, str]:
+    def _ask(self, msgs, batch, max_tokens, usage) -> dict[int, tuple[int, str]] | None:
+        text, timings, use, wall = self.client.chat(msgs, max_tokens=max_tokens, temperature=self.temperature,
+                                                   extra=self.extra)
+        usage.add(timings, use, wall)
+        numbers = [n for n, _ in batch]
+        if self.spans:
+            got = parse_spans(text, numbers)
+            if covers_all(got, numbers):
+                return {a - 1: (b - 1, t) for a, (b, t) in got.items()}
+            return None
+        single = parse_answer(text, numbers)
+        if len(single) == len(batch) and all(single.values()):
+            return {n - 1: (n - 1, t) for n, t in single.items()}
+        return None
+
+    def _batch(self, texts, idx, after, sys_msg, prev, usage, budgets) -> dict[int, tuple[int, str]]:
         batch = [(i + 1, texts[i]) for i in idx]
         ctx = [(i + 1, texts[i]) for i in after]
-        msgs = [sys_msg, *prev, {"role": "user", "content": user_prompt(batch, ctx)}]
-        budget = 64 + sum(len(t) for _, t in batch) * 3
+        msgs = [sys_msg, *prev, {"role": "user", "content": user_prompt(batch, ctx, budgets)}]
+        max_tokens = 64 + sum(len(t) for _, t in batch) * 3
         for attempt in range(2):
-            text, timings, use, wall = self.client.chat(msgs, max_tokens=budget, temperature=self.temperature,
-                                                       extra=self.extra)
-            usage.add(timings, use, wall)
-            got = parse_answer(text, [n for n, _ in batch])
-            if len(got) == len(batch) and all(v for v in got.values()):
-                return {n - 1: v for n, v in got.items()}
+            got = self._ask(msgs, batch, max_tokens, usage)
+            if got is not None:
+                return got
             usage.retries += 1
-            msgs = msgs[:-1] + [{"role": "user", "content": user_prompt(batch, ctx) +
-                                 f"\n\nAnswer with exactly {len(batch)} lines, numbered "
-                                 f"{batch[0][0]} to {batch[-1][0]}."}]
-        if len(idx) == 1:
-            usage.fallbacks += 1
-            return {idx[0]: got.get(idx[0] + 1, "")} if got else {}
-        half = len(idx) // 2
+            msgs = msgs[:-1] + [{"role": "user", "content": user_prompt(batch, ctx, budgets) +
+                                 f"\n\nAnswer every line from {batch[0][0]} to {batch[-1][0]} exactly once."}]
         usage.fallbacks += 1
-        left = self._batch(texts, idx[:half], idx[half:half + len(after)], sys_msg, prev, usage, depth + 1)
-        right = self._batch(texts, idx[half:], after, sys_msg, prev, usage, depth + 1)
+        if len(idx) == 1:
+            return {}
+        half = len(idx) // 2
+        left = self._batch(texts, idx[:half], idx[half:half + len(after)], sys_msg, prev, usage, budgets)
+        right = self._batch(texts, idx[half:], after, sys_msg, prev, usage, budgets)
         return {**left, **right}

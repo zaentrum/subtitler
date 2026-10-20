@@ -37,7 +37,7 @@ def main() -> None:
         for f in sorted((mt_root / tag).glob("*.vtt")):
             stem = f.stem
             name, pair = stem.split(".", 1)
-            src_tag, tgt_tag = pair.split("-", 1)
+            src_tag, tgt_tag = common.split_pair(pair)
             t = cfg.titles[name]
             tgt = Lang.parse(tgt_tag)
             ref_path = reference(t, tgt)

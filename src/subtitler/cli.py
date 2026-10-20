@@ -92,7 +92,7 @@ class Runner:
                 from .translate.llm import Client, LlmTranslator
 
                 client = Client(self.a.llm_url)
-                self._mt = LlmTranslator(client, batch=self.a.batch)
+                self._mt = LlmTranslator(client, batch=self.a.batch, length_budget=self.a.length_budget)
                 self.mt_model = Path(client.model_id()).name
             else:
                 from .translate.madlad import MadladTranslator
@@ -176,6 +176,8 @@ def main(argv: list[str] | None = None) -> int:
             p.add_argument("--mt", choices=["llm", "madlad"], default="llm")
             p.add_argument("--llm-url", default="http://127.0.0.1:8091")
             p.add_argument("--batch", type=int, default=30)
+            p.add_argument("--length-budget", action=argparse.BooleanOptionalAction, default=False,
+                           help="ask for at most N characters where a cue is short for its text")
             p.add_argument("--madlad-model", default=None)
             p.add_argument("--asr-backend", choices=["faster-whisper", "mlx-whisper"], default="faster-whisper")
             p.add_argument("--asr-model", default="large-v3-turbo")

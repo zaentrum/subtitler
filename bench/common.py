@@ -43,6 +43,22 @@ class Config:
         return p
 
 
+def split_pair(pair: str) -> tuple[str, str]:
+    """'zh-Hans-en' -> ('zh-Hans', 'en'): the split where both sides are language tags."""
+    from subtitler.langs import NAMES
+
+    def ok(tag: str) -> bool:
+        parts = tag.split("-")
+        return parts[0] in NAMES and all(len(p) in (2, 4) and p.isalpha() for p in parts[1:]) and len(parts) <= 2
+
+    cuts = [i for i, ch in enumerate(pair) if ch == "-"]
+    for i in cuts:
+        a, b = pair[:i], pair[i + 1:]
+        if ok(a) and ok(b):
+            return a, b
+    raise ValueError(f"not a language pair: {pair}")
+
+
 def load(path: str | None = None) -> Config:
     p = Path(path or os.environ.get("SUBTITLER_LOCAL", ROOT / "local.toml"))
     data = tomllib.loads(p.read_text())

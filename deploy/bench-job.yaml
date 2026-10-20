@@ -1,0 +1,141 @@
+# The GPU run of the subtitler spike (ADR-0014's validation): one Job on a
+# GPU that measures speech recognition (× real time, GPU memory, WER against
+# the packages' own subtitles) and translation (tokens/s with 1, 4 and 8
+# chains in flight), alone and next to live-worker-like load, and writes
+# every report to its log (stdout):
+#
+#   kubectl -n NAMESPACE logs job/subtitler-bench > subtitler-gpu-report.txt
+#
+# Placeholders to fill in before applying (nothing here is applied by the
+# spike): NAMESPACE, IMAGE, MEDIA_CLAIM (the media volume, mounted read-only
+# at /media) and the package paths in the sources ConfigMap. Add the
+# cluster's GPU node selector or tolerations if the nvidia.com/gpu request
+# alone does not place it.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: subtitler-bench-sources
+  namespace: NAMESPACE
+data:
+  # About twenty library packages, as ADR-0014's validation asks: movies and
+  # episodes, several audio languages; some with subtitles in the audio's
+  # language (WER), some with English and German (translation), some with
+  # none at all (the case the ADR is about). The first one's hls/v0 is the
+  # busy load's video unless BUSY_VIDEO names another.
+  sources.json: |
+    [
+      {"name": "en-1",       "package": "/media/PACKAGE_EN_AUDIO_EN_DE_SUBS_1"},
+      {"name": "en-2",       "package": "/media/PACKAGE_EN_AUDIO_EN_DE_SUBS_2"},
+      {"name": "en-3",       "package": "/media/PACKAGE_EN_AUDIO_EN_SUBS_3"},
+      {"name": "en-ep-1",    "package": "/media/PACKAGE_EN_EPISODE_EN_DE_ZH_SUBS"},
+      {"name": "en-ep-2",    "package": "/media/PACKAGE_EN_EPISODE_2"},
+      {"name": "de-1",       "package": "/media/PACKAGE_DE_AUDIO_DE_SUBS"},
+      {"name": "it-1",       "package": "/media/PACKAGE_IT_AUDIO_IT_EN_DE_SUBS"},
+      {"name": "fr-1",       "package": "/media/PACKAGE_FR_AUDIO_EN_SUBS"},
+      {"name": "es-1",       "package": "/media/PACKAGE_ES_AUDIO_EN_SUBS"},
+      {"name": "zh-1",       "package": "/media/PACKAGE_ZH_AUDIO_ZH_EN_DE_SUBS"},
+      {"name": "ja-1",       "package": "/media/PACKAGE_JA_AUDIO_JA_EN_SUBS"},
+      {"name": "ko-1",       "package": "/media/PACKAGE_KO_AUDIO_EN_SUBS"},
+      {"name": "none-en-1",  "package": "/media/PACKAGE_EN_AUDIO_NO_SUBS_1"},
+      {"name": "none-en-2",  "package": "/media/PACKAGE_EN_AUDIO_NO_SUBS_2"},
+      {"name": "none-en-3",  "package": "/media/PACKAGE_EN_AUDIO_NO_SUBS_3"},
+      {"name": "none-de-1",  "package": "/media/PACKAGE_DE_AUDIO_NO_SUBS"},
+      {"name": "none-ko-1",  "package": "/media/PACKAGE_KO_AUDIO_NO_SUBS"},
+      {"name": "none-zh-1",  "package": "/media/PACKAGE_ZH_AUDIO_NO_SUBS"},
+      {"name": "none-und-1", "package": "/media/PACKAGE_UND_AUDIO_NO_SUBS"},
+      {"name": "none-ep-1",  "package": "/media/PACKAGE_EPISODE_NO_SUBS"}
+    ]
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: subtitler-bench
+  namespace: NAMESPACE
+  labels:
+    app.kubernetes.io/name: subtitler-bench
+    app.kubernetes.io/part-of: subtitler-spike
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 14400
+  ttlSecondsAfterFinished: 604800
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: subtitler-bench
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: bench
+          image: IMAGE
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: SOURCES
+              value: /etc/bench/sources.json
+            - name: PHASES
+              value: "asr,mt,busy"
+            # Minutes of each source's audio; 0 is the whole title (about
+            # 4 h of GPU time for twenty films; 20 min keeps the run near 2 h).
+            - name: ASR_MINUTES
+              value: "20"
+            - name: ASR_BATCH
+              value: "16"
+            - name: LLMS
+              value: "qwen3.5-9b-q4km,qwen2.5-7b-q4km"
+            - name: CHAINS
+              value: "1,4,8"
+            - name: CUE_LIMIT
+              value: "300"
+            - name: MT_SOURCES
+              value: "4"
+            # The busy load: NVDEC -> scale_cuda -> NVENC streams in a loop,
+            # as many as the live worker runs at once at its usual load.
+            - name: BUSY_STREAMS
+              value: "4"
+            - name: BUSY_SOURCES
+              value: "3"
+            - name: OUT
+              value: /tmp/report
+          resources:
+            requests:
+              cpu: "4"
+              memory: 16Gi
+              nvidia.com/gpu: 1
+            limits:
+              cpu: "8"
+              memory: 32Gi
+              nvidia.com/gpu: 1
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: media
+              mountPath: /media
+              readOnly: true
+            - name: sources
+              mountPath: /etc/bench
+              readOnly: true
+            - name: models
+              mountPath: /models
+            - name: scratch
+              mountPath: /tmp
+      volumes:
+        - name: media
+          persistentVolumeClaim:
+            claimName: MEDIA_CLAIM
+            readOnly: true
+        - name: sources
+          configMap:
+            name: subtitler-bench-sources
+        # The models (about 19 GB) are fetched from Hugging Face on the first
+        # run. A claim instead of the emptyDir keeps them between runs.
+        - name: models
+          emptyDir:
+            sizeLimit: 40Gi
+        - name: scratch
+          emptyDir:
+            sizeLimit: 20Gi

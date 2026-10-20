@@ -30,6 +30,8 @@ def main() -> None:
     ap.add_argument("--llm-url", default="http://127.0.0.1:8091")
     ap.add_argument("--batch", type=int, default=30)
     ap.add_argument("--after", type=int, default=4)
+    ap.add_argument("--budget", action="store_true", help="mark lines that need condensing with [max N]")
+    ap.add_argument("--spans", action="store_true", help="let the model translate a sentence over lines as one")
     ap.add_argument("--madlad-merge", action=argparse.BooleanOptionalAction, default=True)
     ap.add_argument("--beam", type=int, default=4)
     ap.add_argument("--threads", type=int, default=4)
@@ -44,7 +46,7 @@ def main() -> None:
         from subtitler.translate.llm import Client, LlmTranslator
 
         client = Client(a.llm_url)
-        tr = LlmTranslator(client, batch=a.batch, after=a.after)
+        tr = LlmTranslator(client, batch=a.batch, after=a.after, length_budget=a.budget, spans=a.spans)
         model = client.model_id()
     else:
         from subtitler.translate.madlad import MadladTranslator

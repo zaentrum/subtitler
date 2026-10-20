@@ -179,7 +179,7 @@ def build(words: list[Word], lang: str, *, max_duration: float = 7.0, min_durati
 
     cues: list[vtt.Cue] = []
     for g in groups:
-        texts = [_join(part, lang) for part in g]
+        texts = [collapse_repeats(_join(part, lang), lang) for part in g]
         texts = [t for t in texts if t and not _HALLUCINATIONS.match(t)]
         if not texts:
             continue
@@ -195,6 +195,17 @@ def build(words: list[Word], lang: str, *, max_duration: float = 7.0, min_durati
             end = min(end, nxt - min_gap)
         c.end = max(end, c.start + 0.3)
     return cues
+
+
+_RUN_UNSPACED = re.compile(r"(.{1,6}?)\1{4,}")
+_RUN_SPACED = re.compile(r"\b((?:\w+[,.!?]?\s+){1,3}?)\1{4,}", re.UNICODE)
+
+
+def collapse_repeats(text: str, lang: str) -> str:
+    """A unit repeated five times and more inside a cue (Whisper looping) is kept twice."""
+    if lang in UNSPACED:
+        return _RUN_UNSPACED.sub(lambda m: m.group(1) * 2, text)
+    return _RUN_SPACED.sub(lambda m: m.group(1) * 2, text + " ").strip()
 
 
 def drop_loops(cues: list[vtt.Cue], repeats: int = 3) -> list[vtt.Cue]:
