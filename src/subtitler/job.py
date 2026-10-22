@@ -288,6 +288,12 @@ def translate(cues_in: list[vtt.Cue], src: Lang, tgt: Lang, url: str, chains: in
             usage[k] += d.get(k, 0)
         usage["rejected"] += len(u.rejected)
         usage["failures"] += failures
+    # Each part had its reading time stretched on its own: the last cue of a part may reach into the
+    # first of the next one. Never two cues at once.
+    out.sort(key=lambda c: c.start)
+    for a, b in zip(out, out[1:]):
+        if a.end > b.start - 0.083:
+            a.end = max(a.start + 0.3, b.start - 0.083)
     return out, usage
 
 

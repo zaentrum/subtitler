@@ -338,3 +338,16 @@ def test_an_answer_left_in_english_is_asked_again():
     out, usage = LlmTranslator(fake, batch=20, after=0, spans=True).translate(lines, Lang.parse("en"), zh)
     assert fake.calls == 2 and usage.rejected[0]["untranslated"] == 12
     assert all(t == "这是一句话" for t, _ in out)
+
+
+def test_the_parts_of_a_translation_never_show_two_cues_at_once(monkeypatch):
+    def fake_translate_cues(cues_in, src, tgt, tr, sentences=True):
+        out = [vtt.Cue(c.start, c.end + (5.0 if c is cues_in[-1] else 0.0), "x") for c in cues_in]
+        return out, SimpleNamespace(as_dict=lambda: {}, rejected=[]), 0
+
+    import subtitler.translate as tmod
+    monkeypatch.setattr(tmod, "translate_cues", fake_translate_cues)
+    cs = [vtt.Cue(i * 2.0, i * 2.0 + 1.5, f"Line {i}.") for i in range(100)]
+    out, usage = job.translate(cs, Lang.parse("en"), Lang.parse("de"), "http://127.0.0.1:9", 2, job.LiveFirst(None), False)
+    assert usage["chains"] == 2 and len(out) == 100
+    assert all(a.end <= b.start - 0.08 for a, b in zip(out, out[1:]))
