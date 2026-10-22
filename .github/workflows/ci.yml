@@ -1,0 +1,74 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+    # A release: the tag vX.Y.Z publishes the image as :vX.Y.Z and :X.Y.
+    tags: ['v*.*.*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      # The decision, the text handling, the checks and the run's logic; the
+      # models need a GPU and are not part of the tests.
+      - run: pip install -c requirements-image.txt -e '.[zh,dev]'
+      - run: python -m pytest -q
+
+  image:
+    needs: test
+    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      # The CUDA runtime layers are large: room for them on the runner.
+      - name: Disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # main publishes :latest and :<commit>. A release tag publishes :vX.Y.Z
+      # and :X.Y (no :X.Y for a pre-release such as v1.2.0-rc.1), and leaves
+      # :latest where main put it.
+      - name: Tags
+        id: tags
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            tags="$IMAGE:$GITHUB_REF_NAME"
+            case "$GITHUB_REF_NAME" in
+              *-*) ;;
+              *) v="${GITHUB_REF_NAME#v}"; tags="$tags,$IMAGE:${v%.*}" ;;
+            esac
+          else
+            tags="$IMAGE:latest,$IMAGE:$GITHUB_SHA"
+          fi
+          echo "tags=$tags" >> "$GITHUB_OUTPUT"
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.licenses=MPL-2.0
+            org.opencontainers.image.description=Subtitles in an instance's languages for titles that have none: speech recognition and translation with open-weight models

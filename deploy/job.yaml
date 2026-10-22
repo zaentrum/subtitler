@@ -1,0 +1,95 @@
+# A run of `subtitler job` on one GPU: the titles of the ConfigMap, in its
+# order, from their originals on the media volume (mounted read-only), into
+# the work folder. Nothing here is applied by this repository; a deployment
+# fills in the placeholders and applies it:
+#
+#   NAMESPACE     the namespace the platform runs in
+#   IMAGE         ghcr.io/zaentrum/subtitler:<commit>
+#   MEDIA_CLAIM   the media volume's claim (originals at the paths titles.json names)
+#   METRICS_URL   the stream service's metrics, for live playback first
+#
+# Each title's files are also written to the log (--bundle), so whoever
+# started the run can collect them from it.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: subtitler-titles
+  namespace: NAMESPACE
+data:
+  titles.json: |
+    [
+      {"id": "ITEM_ID", "name": "NAME", "original": "/media/PATH/original.mkv", "language": "en"}
+    ]
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: subtitler
+  namespace: NAMESPACE
+  labels:
+    app.kubernetes.io/name: subtitler
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 21600
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: subtitler
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: subtitler
+          image: IMAGE
+          imagePullPolicy: IfNotPresent
+          args: ["job", "--titles", "/etc/subtitler/titles.json", "--out", "/work", "--models", "/models",
+                 "--languages", "en,de,zh-Hans", "--live-metrics", "METRICS_URL", "--bundle"]
+          resources:
+            requests:
+              cpu: "2"
+              memory: 8Gi
+              nvidia.com/gpu: 1
+            limits:
+              cpu: "8"
+              memory: 14Gi
+              nvidia.com/gpu: 1
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: media
+              mountPath: /media
+              readOnly: true
+            - name: titles
+              mountPath: /etc/subtitler
+              readOnly: true
+            - name: models
+              mountPath: /models
+            - name: work
+              mountPath: /work
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: media
+          persistentVolumeClaim:
+            claimName: MEDIA_CLAIM
+            readOnly: true
+        - name: titles
+          configMap:
+            name: subtitler-titles
+        # About 11 GB of models, fetched on a run's first start; a claim
+        # instead keeps them between runs.
+        - name: models
+          emptyDir:
+            sizeLimit: 30Gi
+        - name: work
+          emptyDir:
+            sizeLimit: 2Gi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 10Gi

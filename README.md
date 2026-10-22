@@ -1,17 +1,21 @@
-# subtitler spike (ADR-0014)
+# subtitler
 
-ADR-0014 proposes that every title gets a subtitle in each of the
-instance's languages, made on the platform where the source brings none:
-keep the source's, convert the script, translate the best subtitle the
-title has, or transcribe the audio first. This spike measures whether that
-holds before anything is built: speech recognition and translation with
-open-weight models, their speed and quality on library titles, the decision
-per language as a prototype command, and a GPU run prepared for the
-platform's RTX 3090.
+Subtitles in each of an instance's languages for titles that have none,
+made on the platform with open-weight models (ADR-0014): keep the source's,
+convert the script, translate the best subtitle the title has, or
+transcribe the audio first and translate the transcript.
 
-Results are in [Results](#results), what they mean for the ADR in
-[Findings](#findings). Nothing here touches a package: the command writes
-into a folder of its own and refuses one inside the package.
+It began as the spike that measured whether this holds (speech recognition
+and translation, their speed and quality on library titles, the decision
+per language); its results are in [Results](#results), what they mean in
+[Findings](#findings). `subtitler job` runs it over titles that have no
+package yet, from their original files, on one GPU beside live playback
+([The run](#the-run)).
+
+Nothing here touches a package or an original: the commands write into a
+folder of their own and refuse one inside the package. Attaching what they
+made to a title is the catalog's business (its attach endpoint), not this
+tool's.
 
 ## The picks
 
@@ -41,8 +45,59 @@ into a folder of its own and refuses one inside the package.
 | `src/subtitler/wrap.py` | line limits per language, re-wrapping, Chinese punctuation house style, reading-speed statistics |
 | `src/subtitler/cli.py` | `subtitler plan` and `subtitler run` |
 | `bench/` | the local measurements (`asr_run`, `asr_score`, `mt_run`, `mt_score`, `comet_score`, `opencc_demo`, `samples`, `summary`) and the GPU run (`gpu_bench`) |
-| `deploy/` | the GPU run: `Dockerfile`, `bench-job.yaml` (placeholders), `run-gpu-bench.sh` |
+| `src/subtitler/job.py`, `original.py`, `transcribe.py`, `qc.py`, `models.py` | `subtitler job`: titles from their originals, the checks, the models |
+| `Dockerfile` | the image of `subtitler job` |
+| `deploy/` | `job.yaml` (a run, placeholders); the spike's GPU bench: `Dockerfile`, `bench-job.yaml`, `run-gpu-bench.sh` |
 | `tests/` | the decision logic and the text handling (`pytest`) |
+
+## The run
+
+`subtitler job` takes a list of titles with no subtitle at all and makes
+one per language for each, in the list's order:
+
+```sh
+subtitler job --titles titles.json --out /work --models /models --languages en,de,zh-Hans \
+  --live-metrics http://STREAM_SERVICE/metrics --bundle
+```
+
+```json
+[{"id": "ITEM_ID", "name": "S01E06", "original": "/media/PATH/original.mkv", "language": "en"}]
+```
+
+Per title, one model on the GPU at a time:
+
+1. the original's main audio (`original.py`): the stream in the title's
+   language that is not commentary or audio description, the default one
+   first; a surround track mixed down centre first, where dialogue sits;
+   read once, at most `--readrate` times real time, a title ahead of the GPU;
+2. speech recognition by Whisper large-v3 (batched, Silero VAD) in a process
+   of its own (`transcribe.py`), which gives the GPU memory back when it
+   ends; the transcript is the subtitle in the audio's language (origin
+   `transcribed`);
+3. translation of the transcript by Qwen3.5-9B behind llama.cpp's server,
+   `--chains` parts of the title at once, whole sentences placed back over
+   their cues, German asked to condense lines short of time (origin
+   `translated`);
+4. the checks (`qc.py`): the speech the cues cover, cues with no speech
+   under them, speech no cue covers, the transcript against a second model
+   (large-v3-turbo) on ten windows, and per language the reading speed,
+   line limits, overlaps, empty and untranslated cues; and samples spread
+   over the title, every language side by side, for a person to read.
+
+Out: `<out>/<id>/<tag>.vtt` (a NOTE says how it was made and by which model),
+`subtitles.json` (label such as "German · AI", origin, model, the GPU
+seconds of every step) and `qc.json`. `--bundle` writes them to the log too.
+
+Live playback comes first (ADR-0013): before each GPU step and each
+translation request the run reads the live worker's queue from the stream
+service's metrics and waits while segments a viewer waits for are being
+made (`--live-wait` seconds at most at a time), and it starts a model only
+when the GPU has its memory free plus `--vram-reserve` MiB for the live
+worker.
+
+The image (`Dockerfile`, built by CI as `ghcr.io/zaentrum/subtitler`) holds
+llama.cpp's release build for CUDA 12.8, FFmpeg 7.1 and the Python side;
+no model. `deploy/job.yaml` is a Job for it with placeholders.
 
 ## The decision per language
 
@@ -128,9 +183,9 @@ python bench/samples.py TAG TAG ...
 python bench/summary.py
 ```
 
-## The GPU run
+## The GPU bench
 
-Prepared, not run: it needs the platform owner's go. Like the live-rung
+The spike's bench, prepared, not run: it needs the platform owner's go. Like the live-rung
 spike's GPU run it belongs in CI: the image built by the pipeline, the Job
 applied by a manual job; these are the steps that job takes.
 
