@@ -351,3 +351,13 @@ def test_the_parts_of_a_translation_never_show_two_cues_at_once(monkeypatch):
     out, usage = job.translate(cs, Lang.parse("en"), Lang.parse("de"), "http://127.0.0.1:9", 2, job.LiveFirst(None), False)
     assert usage["chains"] == 2 and len(out) == 100
     assert all(a.end <= b.start - 0.08 for a, b in zip(out, out[1:]))
+
+
+def test_a_silent_word_far_from_the_rest_of_its_sentence_still_goes_with_it():
+    from subtitler import cues
+
+    W = cues.Word
+    words = [W(10.0, 10.5, " home.", 0.9), W(11.6, 11.9, " We're", 0.9), W(105.0, 105.4, " all", 0.9), W(105.4, 106.0, " here.", 0.9)]
+    speech = [(9.5, 10.6), (104.9, 106.1)]
+    built = cues.build(words, "en", speech=speech)
+    assert [c.text for c in built] == ["home.", "We're all here."]

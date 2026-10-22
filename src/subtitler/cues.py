@@ -115,7 +115,7 @@ def _speech_under(w: Word, speech: list[tuple[float, float]]) -> float:
 
 
 def clean_words(words: list[Word], orphan_gap: float = 2.0, speech: list[tuple[float, float]] | None = None,
-                misplaced_gap: float = 0.4, most: float = 30.0) -> list[Word]:
+                misplaced_gap: float = 0.4, most: float = 120.0) -> list[Word]:
     """Drop empty words; move an orphan next to the words it belongs to.
 
     `speech`: the stretches VAD found speech in (the words' timeline). A word
@@ -142,7 +142,7 @@ def clean_words(words: list[Word], orphan_gap: float = 2.0, speech: list[tuple[f
         # batched decoding pins it to the end of the sentence before, where
         # VAD hears that sentence's speech. It goes with the rest.
         starts = i == 0 or _ends_sentence(ws[i - 1].text)
-        lone = starts and prev_gap < 1.0 and 1.0 <= gap <= most and not _ends_sentence(w.text)
+        lone = starts and prev_gap < 1.0 and 1.0 <= gap <= 30.0 and not _ends_sentence(w.text)
         misplaced = misplaced or lone
         if orphan or misplaced:
             d = min(0.6, max(0.2, w.end - w.start))
