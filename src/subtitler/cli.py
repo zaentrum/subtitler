@@ -2,6 +2,7 @@
 
     subtitler plan PACKAGE --languages en,de,zh-Hans [--original-language it] [--exclude SOURCE ...]
     subtitler run  PACKAGE --out DIR --languages en,de,zh-Hans [options]
+    subtitler job  --titles titles.json --out DIR --models DIR [options]   (job.py: titles with no package yet)
 
 `plan` prints what would be done per language. `run` does it and writes
 <DIR>/<language>.vtt and <DIR>/subtitles.json (label, origin, source,
@@ -166,6 +167,15 @@ class Runner:
 
 
 def main(argv: list[str] | None = None) -> int:
+    args = sys.argv[1:] if argv is None else list(argv)
+    if args and args[0] == "job":  # titles without subtitles, from their originals (job.py)
+        from . import job
+
+        return job.main(args[1:])
+    if args and args[0] == "transcribe":  # one title's speech recognition in a process of its own
+        from . import transcribe
+
+        return transcribe.main(args[1:])
     ap = argparse.ArgumentParser(prog="subtitler", description=__doc__.split("\n\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
     for name in ("plan", "run"):
@@ -193,7 +203,7 @@ def main(argv: list[str] | None = None) -> int:
             p.add_argument("--compute-type", default="default")
             p.add_argument("--batch-size", type=int, default=0, help="faster-whisper batched inference (GPU: 8-16)")
             p.add_argument("--dry-run", action="store_true")
-    a = ap.parse_args(argv)
+    a = ap.parse_args(args)
 
     pkg = load(a.package)
     plans = plan(pkg, parse_list(a.languages), a.original_language, tuple(a.exclude), a.source_order)
