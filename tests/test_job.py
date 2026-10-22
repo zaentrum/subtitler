@@ -195,3 +195,76 @@ def test_one_title_end_to_end_with_fakes_for_the_gpu(tmp_path, monkeypatch, caps
     with tarfile.open(fileobj=io.BytesIO(base64.b64decode("".join(data.split()))), mode="r:gz") as tar:
         names = sorted(tar.getnames())
     assert names == ["item-1/de.vtt", "item-1/en.vtt", "item-1/qc.json", "item-1/subtitles.json", "item-1/zh-Hans.vtt"]
+
+
+def test_a_first_word_pinned_before_the_pause_moves_to_the_rest_of_its_sentence():
+    from subtitler import cues
+
+    W = cues.Word
+    words = [W(10.0, 10.4, " Is", 0.9), W(26.0, 26.5, " anything", 0.9), W(26.5, 27.0, " missing?", 0.9),
+             W(30.0, 30.3, " Anna,", 0.9), W(35.0, 35.4, " my", 0.9), W(35.4, 35.8, " friend.", 0.9)]
+    speech = [(25.9, 27.1), (29.9, 30.4), (34.9, 35.9)]  # nothing at 10 s; "Anna," was spoken
+    out = cues.clean_words(words, speech=speech)
+    assert out[0].end == pytest.approx(25.95) and out[0].start < out[0].end
+    assert out[3].start == pytest.approx(30.0)  # speech under it: it stays where it was said
+    built = cues.build(words, "en", speech=speech)
+    assert built[0].text == "Is anything missing?"
+
+
+def test_uncovered_speech_becomes_windows_to_decode_again():
+    from subtitler import cues
+
+    W = cues.Word
+    words = [W(1.0, 1.5, " Hello", 0.9), W(1.5, 2.0, " there.", 0.9)]
+    speech = [(0.9, 2.1), (10.0, 14.0), (15.0, 18.0), (60.0, 60.5), (70.0, 75.0)]
+    win = transcribe.uncovered(speech, words)
+    assert win == [(pytest.approx(9.7), pytest.approx(18.3)), (pytest.approx(69.7), pytest.approx(75.3))]
+
+
+def test_a_shifted_batch_is_told_from_an_aligned_one():
+    from subtitler.translate.llm import misaligned
+
+    lens = (10, 60, 25, 80, 12, 35, 70, 20, 90, 14, 50, 41, 65, 18)
+    src = [("x" * n) for n in lens]
+    aligned = [("y" * (n // 3)) for n in lens]
+    shifted = aligned[2:] + ["y" * 4, "y" * 6]  # two lines dropped, the rest moved up, two made up at the end
+    assert not misaligned(src, aligned, unspaced=True)
+    assert misaligned(src, shifted, unspaced=True)
+    assert not misaligned(src[:8], shifted[:8], unspaced=True)  # too few lines to tell
+
+
+def test_no_ends_a_sentence_unless_a_number_follows():
+    from subtitler.translate import prepare, sentence_groups
+
+    cs = [vtt.Cue(0.0, 1.0, "No."), vtt.Cue(1.2, 4.0, "But a warm coat helps twice as much."),
+          vtt.Cue(4.2, 5.0, "Room no."), vtt.Cue(5.2, 6.0, "5 is free.")]
+    assert sentence_groups(prepare(cs)) == [[0], [1], [2, 3]]
+
+
+def test_a_shifted_answer_is_asked_again():
+    from subtitler.translate.llm import LlmTranslator
+
+    lens = (10, 60, 25, 80, 12, 35, 70, 20, 90, 14, 50, 41, 65, 18)
+    texts = [("w " * (n // 2)).strip() for n in lens]
+    good = {i + 1: "z" * (n // 3) for i, n in enumerate(lens)}
+
+    class Fake:
+        model = "x"
+
+        def __init__(self):
+            self.calls = 0
+
+        def chat(self, messages, max_tokens, temperature=0.0, extra=None):
+            self.calls += 1
+            nums = sorted(good)
+            if self.calls == 1:  # shifted by two, the count kept
+                vals = [good[n] for n in nums][2:] + ["z" * 4, "z" * 6]
+            else:
+                vals = [good[n] for n in nums]
+            assert "for context only" not in messages[-1]["content"]
+            return "\n".join(f"{n}| {v}" for n, v in zip(nums, vals)), {"predicted_n": 10}, {}, 0.1
+
+    fake = Fake()
+    out, usage = LlmTranslator(fake, batch=20, after=0).translate(texts, Lang.parse("en"), Lang.parse("zh-Hans"))
+    assert fake.calls == 2 and usage.retries == 1 and usage.rejected[0]["shifted"]
+    assert [t for t, _ in out] == [good[i + 1] for i in range(len(lens))]

@@ -12,7 +12,11 @@ It writes one JSON file:
   even when the language was given;
 - `speech`: the stretches Silero VAD finds speech in, for the timing check;
 - `check`: windows of the audio transcribed a second time by another model
-  (`--check-model`, decoded one window at a time), for the agreement check.
+  (`--check-model`, decoded one window at a time), for the agreement check;
+- `filled`: stretches of speech the batched pass gave (almost) no words
+  for, decoded again one window at a time by the same model, whose words
+  took their place. Batched decoding drops a whole window now and then
+  (a scene with music under quiet dialogue): this pass gets it back.
 """
 
 from __future__ import annotations
@@ -53,6 +57,46 @@ def check_windows(speech: list[tuple[float, float]], n: int, length: float = 30.
     return out
 
 
+def uncovered(speech: list[tuple[float, float]], words: list, min_len: float = 1.0, covered: float = 0.2,
+              join: float = 2.0, longest: float = 28.0, pad: float = 0.3) -> list[tuple[float, float]]:
+    """Windows of speech the words leave (almost) uncovered: stretches of `min_len` s and more with under
+    `covered` of their time under words, the ones less than `join` s apart in one window of at most
+    `longest` s, padded by `pad` s."""
+    spans = sorted((w.start, w.end) for w in words)
+    out: list[list[float]] = []
+    for s, e in speech:
+        if e - s < min_len:
+            continue
+        under = sum(max(0.0, min(e, b) - max(s, a)) for a, b in spans if a < e and b > s)
+        if under >= covered * (e - s):
+            continue
+        if out and s - out[-1][1] < join and e - out[-1][0] <= longest:
+            out[-1][1] = e
+        else:
+            out.append([s, min(e, s + longest)])
+    return [(max(0.0, s - pad), e + pad) for s, e in out]
+
+
+def fill(model, audio, result: asr.Result, speech: list[tuple[float, float]], language: str | None) -> list[dict]:
+    """Decode the uncovered windows one at a time and put their words in place of what was there."""
+    from .cues import Word
+
+    filled = []
+    for s, e in uncovered(speech, result.words):
+        seg = audio[int(s * SR): int(e * SR)]
+        segs, _ = model.model.transcribe(seg, language=language or result.language, beam_size=5, word_timestamps=True,
+                                         vad_filter=True, condition_on_previous_text=False, no_speech_threshold=None)
+        words = [Word(w.start + s, w.end + s, w.word, w.probability) for x in segs for w in (x.words or [])]
+        words = [w for w in words if w.probability >= 0.3 or len(w.text.strip()) > 2]
+        text = "".join(w.text for w in words).strip()
+        filled.append({"start": round(s, 3), "end": round(e, 3), "words": len(words), "text": text[:300]})
+        if not words:
+            continue
+        result.words = [w for w in result.words if not (s <= (w.start + w.end) / 2 < e)] + words
+        result.words.sort(key=lambda w: w.start)
+    return filled
+
+
 def detect(model, audio) -> tuple[str, float]:
     try:
         lang, prob, _ = model.model.detect_language(audio, vad_filter=True, language_detection_segments=4)
@@ -81,8 +125,11 @@ def main(argv: list[str] | None = None) -> int:
     model = asr.FasterWhisper(a.model, device=a.device, compute_type=a.compute_type, batch_size=a.batch_size)
     detected = detect(model, audio)
     r = model.transcribe(a.wav, language=a.language)
+    f0 = time.perf_counter()
+    filled = fill(model, audio, r, speech, a.language)
     out = {"result": json.loads(r.to_json()), "detected": {"language": detected[0], "probability": round(detected[1], 3)},
-           "speech": [[round(s, 3), round(e, 3)] for s, e in speech], "check": None}
+           "speech": [[round(s, 3), round(e, 3)] for s, e in speech], "check": None,
+           "filled": {"windows": filled, "seconds": round(time.perf_counter() - f0, 1)}}
     del model
     if a.check_model:
         c0 = time.perf_counter()
@@ -98,8 +145,10 @@ def main(argv: list[str] | None = None) -> int:
         del check
     out["seconds"] = round(time.perf_counter() - t0, 1)
     Path(a.out).write_text(json.dumps(out, ensure_ascii=False))
+    got = sum(1 for x in filled if x["words"])
     print(f"transcribed {r.audio_seconds:.0f}s of audio ({r.language}, detected {detected[0]} "
-          f"p={detected[1]:.2f}) in {r.seconds:.0f}s: {len(r.words)} words", file=sys.stderr)
+          f"p={detected[1]:.2f}) in {r.seconds:.0f}s: {len(r.words)} words; {len(filled)} windows of speech "
+          f"without words decoded again, {got} gave words", file=sys.stderr)
     return 0
 
 

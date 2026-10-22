@@ -6,7 +6,10 @@ where it fits, and is cut where a subtitler would cut:
 
 1. Words are cleaned: a word Whisper pinned far from the words it belongs
    to (an orphan before a long gap, typically the first word after silence)
-   is moved next to them.
+   is moved next to them. With the stretches of speech VAD found, a word
+   that ends no sentence, has no speech under it and is followed after a
+   pause by the rest of its sentence is moved next to that rest: batched
+   decoding pins the first word of a stretch to where the stretch began.
 2. The word stream is cut hard at pauses of 1 s and more, then into
    sentences at sentence-final punctuation.
 3. A sentence too long for one cue is cut near its middle, preferring a
@@ -106,8 +109,20 @@ def _w(words: list[Word], lang: str) -> int:
     return wrap.width(_join(words, lang))
 
 
-def clean_words(words: list[Word], orphan_gap: float = 2.0) -> list[Word]:
-    """Drop empty words; move an orphan next to the words it belongs to."""
+def _speech_under(w: Word, speech: list[tuple[float, float]]) -> float:
+    """Seconds of the word's span that VAD found speech in."""
+    return sum(max(0.0, min(w.end, e) - max(w.start, s)) for s, e in speech if s < w.end and e > w.start)
+
+
+def clean_words(words: list[Word], orphan_gap: float = 2.0, speech: list[tuple[float, float]] | None = None,
+                misplaced_gap: float = 0.4, most: float = 30.0) -> list[Word]:
+    """Drop empty words; move an orphan next to the words it belongs to.
+
+    `speech`: the stretches VAD found speech in (the words' timeline). A word
+    that ends no sentence, has under a third of its span in speech and is
+    followed by the next word after more than `misplaced_gap` seconds (at most
+    `most`) was pinned where its stretch began: it moves to just before the
+    next word."""
     ws = [Word(w.start, w.end, w.text, w.probability) for w in words if w.text.strip()]
     for i in range(len(ws) - 1):
         w, nxt = ws[i], ws[i + 1]
@@ -115,10 +130,17 @@ def clean_words(words: list[Word], orphan_gap: float = 2.0) -> list[Word]:
         gap = nxt.start - w.end
         # A lone word that ends no sentence, far from what came before and
         # from what follows: Whisper pinned it to the start of the stretch.
-        if gap > orphan_gap and prev_gap > orphan_gap and not _ends_sentence(w.text):
+        # Where VAD says what was spoken, only a word with no speech under it moves.
+        silent = speech is not None and _speech_under(w, speech) < max(0.05, (w.end - w.start) / 3)
+        orphan = (gap > orphan_gap and prev_gap > orphan_gap and not _ends_sentence(w.text)
+                  and (speech is None or silent))
+        # A word with no speech under it, the rest of its sentence after a
+        # pause: batched decoding pinned it to where the stretch began.
+        misplaced = silent and misplaced_gap < gap <= most and not _ends_sentence(w.text)
+        if orphan or misplaced:
             d = min(0.6, max(0.2, w.end - w.start))
             w.end = nxt.start - 0.05
-            w.start = w.end - d
+            w.start = max(w.end - d, ws[i - 1].end + 0.01 if i > 0 else 0.0)
         if w.end - w.start > 3.0:  # a word does not last 3 s
             w.start = w.end - 1.0
     return ws
@@ -193,11 +215,12 @@ def _sentences(words: list[Word]) -> list[list[Word]]:
 
 
 def build(words: list[Word], lang: str, *, max_duration: float = 7.0, min_duration: float = 1.0,
-          hard_pause: float = 1.0, lead_out: float = 0.5, min_gap: float = 0.083) -> list[vtt.Cue]:
+          hard_pause: float = 1.0, lead_out: float = 0.5, min_gap: float = 0.083,
+          speech: list[tuple[float, float]] | None = None) -> list[vtt.Cue]:
     lim = wrap.limits(lang)
     max_chars = lim.chars_per_cue
     units: list[list[Word]] = []
-    for chunk in _chunks(drop_fillers(clean_words(words), lang), hard_pause):
+    for chunk in _chunks(drop_fillers(clean_words(words, speech=speech), lang), hard_pause):
         for sent in _sentences(chunk):
             units += _split_long(sent, lang, max_chars, max_duration)
 

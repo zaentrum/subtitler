@@ -83,7 +83,10 @@ def sentence_groups(prep: Prepared, max_cues: int = 3, max_gap: float = 1.5) -> 
             cur = []
         cur.append(i)
         last_word = t.split()[-1].lower() if t.split() else ""
-        if (_SENTENCE_END.search(t) and last_word not in _ABBREV) or len(cur) >= max_cues:
+        # "No." ends a sentence (an answer) unless a number follows it.
+        nxt = prep.texts[i + 1].lstrip() if i + 1 < len(prep.texts) else ""
+        abbrev = last_word in _ABBREV and (last_word != "no." or nxt[:1].isdigit())
+        if (_SENTENCE_END.search(t) and not abbrev) or len(cur) >= max_cues:
             groups.append(cur)
             cur = []
     if cur:

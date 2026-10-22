@@ -125,6 +125,30 @@ def parse_answer(text: str, wanted: list[int]) -> dict[int, str]:
     return {a: t for a, (b, t) in parse_spans(text, wanted).items() if a == b}
 
 
+def _pearson(a: list[float], b: list[float]) -> float:
+    n = len(a)
+    if n < 3:
+        return 0.0
+    ma, mb = sum(a) / n, sum(b) / n
+    va = sum((x - ma) ** 2 for x in a) ** 0.5
+    vb = sum((y - mb) ** 2 for y in b) ** 0.5
+    return sum((x - ma) * (y - mb) for x, y in zip(a, b)) / (va * vb) if va and vb else 0.0
+
+
+def misaligned(sources: list[str], answers: list[str], unspaced: bool = False) -> bool:
+    """Whether a batch's answers look shifted against its lines: every number answered, but the
+    translations' lengths follow the lines one or two places away far better than their own lines
+    (a model that dropped a line and moved the rest up keeps the count and loses the alignment)."""
+    n = len(sources)
+    if n < 10 or len(answers) != n:
+        return False
+    a = [float(len(t.replace(" <br> ", " "))) for t in sources]
+    b = [float(len(t.replace(" ", "")) if unspaced else len(t)) for t in answers]
+    own = _pearson(a, b)
+    moved = max(_pearson(a[:n - k], b[k:]) if k > 0 else _pearson(a[-k:], b[:n + k]) for k in (-2, -1, 1, 2))
+    return moved > 0.6 and moved > own + 0.25
+
+
 @dataclass
 class Usage:
     requests: int = 0
@@ -207,10 +231,12 @@ class LlmTranslator:
         self.extra = extra or {}
         self.length_budget = length_budget
         self.spans = spans
+        self.unspaced = False
 
     def translate(self, texts: list[str], src: Lang, tgt: Lang,
                   durations: list[float] | None = None) -> tuple[list[tuple[str, int]], Usage]:
         usage = Usage()
+        self.unspaced = tgt.code in ("zh", "yue", "ja")
         sys_msg = {"role": "system", "content": system_prompt(src, tgt, self.length_budget, self.spans)}
         budgets: dict[int, int] = {}
         if self.length_budget and durations:
@@ -250,7 +276,11 @@ class LlmTranslator:
         else:
             single = parse_answer(text, numbers)
             if len(single) == len(batch) and all(single.values()):
-                return {n - 1: (n - 1, t) for n, t in single.items()}
+                answers = [single[n] for n, _ in batch]
+                if not misaligned([t for _, t in batch], answers, self.unspaced):
+                    return {n - 1: (n - 1, t) for n, t in single.items()}
+                usage.rejected.append({"lines": f"{numbers[0]}-{numbers[-1]}", "shifted": True, "answer": text[:8000]})
+                return None
         answered = [int(m) for m in re.findall(r"^\s*(\d+)", text, re.M)]
         spans = parse_spans(text, numbers)
         usage.rejected.append({

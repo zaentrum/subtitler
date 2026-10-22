@@ -104,12 +104,14 @@ def language(cues: list[vtt.Cue], lang: str, source: list[vtt.Cue] | None = None
     overlaps = sum(1 for a, b in zip(cues, cues[1:]) if b.start < a.end - 0.001)
     empty = sum(1 for c in cues if not vtt.plain(c.text).strip())
     left = 0
+    latin_words = 0
     if lang == "zh":
         left = sum(1 for c in cues if not _HAN.search(c.text) and _LATIN.search(c.text))
+        latin_words = sum(1 for c in cues if _HAN.search(c.text) and re.search(r"[A-Za-z]{3,}", vtt.plain(c.text)))
     elif source:
         src_text = {vtt.plain(c.text).strip().lower() for c in source if len(vtt.plain(c.text).strip()) > 12}
         left = sum(1 for c in cues if vtt.plain(c.text).strip().lower() in src_text)
-    st.update({"overlaps": overlaps, "empty": empty, "left_in_source_language": left,
+    st.update({"overlaps": overlaps, "empty": empty, "left_in_source_language": left, "latin_words": latin_words,
                "shortest_s": round(min(durations), 2) if durations else None,
                "longest_s": round(max(durations), 2) if durations else None,
                "lines_max": max((len([l for l in c.text.split("\n") if l.strip()]) for c in cues), default=0)})
@@ -133,3 +135,20 @@ def samples(tracks: dict[str, list[vtt.Cue]], n: int = 12, first: str = "en") ->
             row[tag] = hit.text.replace("\n", " / ") if hit else ""
         out.append(row)
     return out
+
+
+def alignment(track: list[vtt.Cue], source: list[vtt.Cue], window: int = 16, step: int = 8) -> dict:
+    """Stretches where a translation looks shifted against its source: windows of `window` cues
+    (paired by start time, as translations keep their source cue's start) whose lengths follow the
+    source one or two cues away far better than their own (translate.llm.misaligned's test)."""
+    from .translate.llm import misaligned
+
+    by_start = {round(c.start, 2): c for c in source}
+    pairs = [(by_start[round(c.start, 2)], c) for c in track if round(c.start, 2) in by_start]
+    unspaced = any(_HAN.search(c.text) for c in track[:50])
+    flagged = []
+    for k in range(0, max(0, len(pairs) - window + 1), step):
+        seg = pairs[k:k + window]
+        if misaligned([vtt.plain(s.text) for s, _ in seg], [vtt.plain(t.text) for _, t in seg], unspaced):
+            flagged.append(vtt.timestamp(seg[0][0].start))
+    return {"paired": len(pairs), "of": len(track), "shifted_windows": len(flagged), "at": flagged[:12]}

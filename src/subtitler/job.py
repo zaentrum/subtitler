@@ -262,7 +262,9 @@ def translate(cues_in: list[vtt.Cue], src: Lang, tgt: Lang, url: str, chains: in
 
     def work(k: int) -> None:
         try:
-            tr = LlmTranslator(GatedClient(url, live), batch=30, length_budget=length_budget)
+            # No lines after the batch as context: a model that translated them shifted the batch's
+            # answers by a line or two and kept the count; the batch before stays as context.
+            tr = LlmTranslator(GatedClient(url, live), batch=20, after=0, length_budget=length_budget)
             results[k] = translate_cues(parts[k], src, tgt, tr, sentences=True)
         except Exception as e:  # noqa: BLE001 - reported with the part
             errors[k] = repr(e)
@@ -324,13 +326,14 @@ def run_title(t: Title, a, paths: dict[str, Path], langs: list[Lang], live: Live
         summary["errors"].append("speech recognition failed: " + proc.stderr[-1500:])
         say(f"{t.name}: speech recognition failed:\n{proc.stderr[-1500:]}")
         return summary
-    say(f"{t.name}: {proc.stderr.strip().splitlines()[-1] if proc.stderr.strip() else 'transcribed'} "
-        f"({t.gpu['transcribe']:.0f} s on the GPU)")
+    lines = [x for x in proc.stderr.strip().splitlines() if x.startswith("transcribed ")]
+    say(f"{t.name}: {lines[-1] if lines else 'transcribed'} ({t.gpu['transcribe']:.0f} s on the GPU)")
     tr = json.loads(words_json.read_text())
     res = tr["result"]
     words = [cues.Word(w["start"] + t.offset, w["end"] + t.offset, w["text"], w["probability"]) for w in res["words"]]
     heard = res["language"]
-    transcript = cues.build(words, heard)
+    speech = [(x[0] + t.offset, x[1] + t.offset) for x in tr.get("speech", [])]
+    transcript = cues.build(words, heard, speech=speech or None)
     if audio_lang.code == "zh":
         transcript = [c.with_text(script.convert(c.text, "s2t" if audio_lang.script == "Hant" else "t2s")) for c in transcript]
     tracks: dict[str, list[vtt.Cue]] = {}
@@ -387,6 +390,8 @@ def run_title(t: Title, a, paths: dict[str, Path], langs: list[Lang], live: Live
               "timing": qc.timing(transcript, [tuple(x) for x in tr.get("speech", [])], t.offset),
               "agreement": qc.agreement(res["words"], (tr.get("check") or {}).get("windows", []), heard, t.offset)
               if tr.get("check") else None,
+              "filled": tr.get("filled"),
+              "alignment": {tag: qc.alignment(cs, transcript) for tag, cs in tracks.items() if tag != audio_lang.tag},
               "languages": {tag: qc.language(cs, Lang.parse(tag).code, transcript if tag != audio_lang.tag else None)
                             for tag, cs in tracks.items()},
               "samples": qc.samples(tracks, n=a.samples, first=audio_lang.tag),
