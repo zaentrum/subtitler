@@ -137,6 +137,13 @@ def clean_words(words: list[Word], orphan_gap: float = 2.0, speech: list[tuple[f
         # A word with no speech under it, the rest of its sentence after a
         # pause: batched decoding pinned it to where the stretch began.
         misplaced = silent and misplaced_gap < gap <= most and not _ends_sentence(w.text)
+        # The first word of a sentence right after the sentence before it,
+        # alone before a pause, the rest of its sentence after the pause:
+        # batched decoding pins it to the end of the sentence before, where
+        # VAD hears that sentence's speech. It goes with the rest.
+        starts = i == 0 or _ends_sentence(ws[i - 1].text)
+        lone = starts and prev_gap < 1.0 and 1.0 <= gap <= most and not _ends_sentence(w.text)
+        misplaced = misplaced or lone
         if orphan or misplaced:
             d = min(0.6, max(0.2, w.end - w.start))
             w.end = nxt.start - 0.05

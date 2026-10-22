@@ -78,7 +78,10 @@ def sentence_groups(prep: Prepared, max_cues: int = 3, max_gap: float = 1.5) -> 
                 cur = []
             groups.append([i])
             continue
-        if cur and prep.cues[i].start - prep.cues[cur[-1]].end > max_gap:
+        # A pause ends a group, unless the sentence goes on after it: a line
+        # that starts in lower case continues the one before.
+        goes_on = prep.texts[i][:1].islower()
+        if cur and prep.cues[i].start - prep.cues[cur[-1]].end > max_gap and not goes_on:
             groups.append(cur)
             cur = []
         cur.append(i)
@@ -127,9 +130,14 @@ def translate_cues(cues: list[vtt.Cue], src: Lang, tgt: Lang, translator, is_sdh
         else:
             g_outs, usage = translator.translate(texts, src, tgt)
         outs: list = [("", 0)] * len(prep.texts)
-        for g, o in zip(groups, g_outs):
-            t = o[0] if isinstance(o, tuple) else o
-            outs[g[0]] = (t, len(g))
+        k = 0
+        while k < len(groups):
+            o = g_outs[k]
+            t, span = o if isinstance(o, tuple) else (o, 1)
+            span = max(1, min(span, len(groups) - k))  # an answer over `span` sentences covers all their cues
+            first, last = groups[k][0], groups[k + span - 1][-1]
+            outs[first] = (t, last - first + 1)
+            k += span
     elif getattr(translator, "uses_durations", False):
         outs, usage = translator.translate(prep.texts, src, tgt, durations=[c.duration for c in prep.cues])
     else:

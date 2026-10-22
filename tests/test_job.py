@@ -189,12 +189,13 @@ def test_one_title_end_to_end_with_fakes_for_the_gpu(tmp_path, monkeypatch, caps
     assert report["agreement"]["mean_wer"] == 0.0
     assert report["timing"]["cues_without_speech"] == 0
     assert set(report["languages"]) == {"en", "de", "zh-Hans"}
-    # the bundle in the log carries the files, not the transcript
+    # the bundle in the log carries the files and the transcript (words, speech, filled windows)
     log = capsys.readouterr().out
     data = log.split("-----BEGIN SUBTITLER OUTPUT item-1-----\n")[1].split("-----END")[0]
     with tarfile.open(fileobj=io.BytesIO(base64.b64decode("".join(data.split()))), mode="r:gz") as tar:
         names = sorted(tar.getnames())
-    assert names == ["item-1/de.vtt", "item-1/en.vtt", "item-1/qc.json", "item-1/subtitles.json", "item-1/zh-Hans.vtt"]
+    assert names == ["item-1/de.vtt", "item-1/en.vtt", "item-1/qc.json", "item-1/subtitles.json",
+                     "item-1/transcript.json", "item-1/zh-Hans.vtt"]
 
 
 def test_a_first_word_pinned_before_the_pause_moves_to_the_rest_of_its_sentence():
@@ -268,3 +269,40 @@ def test_a_shifted_answer_is_asked_again():
     out, usage = LlmTranslator(fake, batch=20, after=0).translate(texts, Lang.parse("en"), Lang.parse("zh-Hans"))
     assert fake.calls == 2 and usage.retries == 1 and usage.rejected[0]["shifted"]
     assert [t for t, _ in out] == [good[i + 1] for i in range(len(lens))]
+
+
+def test_the_first_word_alone_before_a_pause_goes_with_the_rest_of_its_sentence():
+    from subtitler import cues
+
+    W = cues.Word
+    words = [W(10.0, 10.4, " Of", 0.9), W(10.4, 11.0, " 1990.", 0.9), W(11.2, 11.4, " The", 0.9),
+             W(12.6, 13.0, " train", 0.9), W(13.0, 13.6, " left", 0.9), W(13.6, 14.0, " early.", 0.9)]
+    speech = [(9.9, 11.5), (12.5, 14.1)]  # VAD heard "The" at 11.2: the speech of the sentence before
+    built = cues.build(words, "en", speech=speech)
+    assert [c.text for c in built] == ["Of 1990.", "The train left early."]
+    assert built[1].start == pytest.approx(12.55, abs=0.3)
+
+
+def test_a_line_that_goes_on_after_a_pause_stays_with_its_sentence():
+    from subtitler.translate import prepare, sentence_groups
+
+    cs = [vtt.Cue(0.0, 3.0, "We have lived here for many years and have not yet met"),
+          vtt.Cue(5.5, 6.5, "our neighbours."), vtt.Cue(9.0, 10.0, "Is there a bakery?")]
+    assert sentence_groups(prepare(cs)) == [[0, 1], [2]]
+
+
+def test_an_answer_over_two_sentences_covers_both_their_times():
+    from subtitler.translate import translate_cues
+
+    class Spans:
+        uses_durations = False
+
+        def translate(self, texts, src, tgt):
+            assert len(texts) == 3
+            return [("Eins und zwei.", 2), ("", 0), ("Drei.", 1)], SimpleNamespace(merged=0)
+
+    cs = [vtt.Cue(0.0, 1.0, "One."), vtt.Cue(1.2, 2.0, "Two."), vtt.Cue(4.0, 5.0, "Three.")]
+    out, _, failures = translate_cues(cs, Lang.parse("en"), Lang.parse("de"), Spans(), sentences=True)
+    assert failures == 0
+    assert [(c.start, c.text) for c in out] == [(0.0, "Eins und zwei."), (4.0, "Drei.")]
+    assert out[0].end >= 2.0

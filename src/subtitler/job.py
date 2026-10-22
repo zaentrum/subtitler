@@ -264,7 +264,9 @@ def translate(cues_in: list[vtt.Cue], src: Lang, tgt: Lang, url: str, chains: in
         try:
             # No lines after the batch as context: a model that translated them shifted the batch's
             # answers by a line or two and kept the count; the batch before stays as context.
-            tr = LlmTranslator(GatedClient(url, live), batch=20, after=0, length_budget=length_budget)
+            # Spans: a model that wants to translate two lines as one says so ("12-13|") instead of
+            # folding one into the other and moving the rest up.
+            tr = LlmTranslator(GatedClient(url, live), batch=20, after=0, length_budget=length_budget, spans=True)
             results[k] = translate_cues(parts[k], src, tgt, tr, sentences=True)
         except Exception as e:  # noqa: BLE001 - reported with the part
             errors[k] = repr(e)
@@ -293,7 +295,7 @@ def bundle(t: Title, folder: Path) -> None:
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
         for p in sorted(folder.iterdir()):
-            if p.suffix in (".vtt", ".json") and p.name != "transcript.json":
+            if p.suffix in (".vtt", ".json"):
                 tar.add(p, arcname=f"{t.id}/{p.name}")
     data = base64.b64encode(buf.getvalue()).decode()
     print(f"-----BEGIN SUBTITLER OUTPUT {t.id}-----", flush=True)

@@ -272,7 +272,13 @@ class LlmTranslator:
         if self.spans:
             got = parse_spans(text, numbers)
             if covers_all(got, numbers):
-                return {a - 1: (b - 1, t) for a, (b, t) in got.items()}
+                by = dict(batch)
+                units = sorted(got.items())
+                sources = [" ".join(by[k] for k in range(a, b + 1)) for a, (b, _) in units]
+                if not misaligned(sources, [t for _, (_, t) in units], self.unspaced):
+                    return {a - 1: (b - 1, t) for a, (b, t) in got.items()}
+                usage.rejected.append({"lines": f"{numbers[0]}-{numbers[-1]}", "shifted": True, "answer": text[:8000]})
+                return None
         else:
             single = parse_answer(text, numbers)
             if len(single) == len(batch) and all(single.values()):
