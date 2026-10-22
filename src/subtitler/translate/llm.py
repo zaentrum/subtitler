@@ -66,6 +66,13 @@ NO_SPAN_RULE = ("- Keep each line's content in that line. Do not merge lines or 
                 "when a sentence runs over several lines.\n")
 
 
+# How names are written where the target's script is not the source's.
+_NAMES = {
+    "zh": "- Write people's and places' names in Chinese characters, as Chinese subtitles do; keep only brand names. ",
+    "ja": "- Write people's and places' names in katakana, as Japanese subtitles do. ",
+}
+
+
 def system_prompt(src: Lang, tgt: Lang, with_budget: bool = False, spans: bool = False) -> str:
     rules = _TARGET_RULES.get(tgt.tag) or _TARGET_RULES.get(tgt.code, "")
     return (
@@ -77,7 +84,8 @@ def system_prompt(src: Lang, tgt: Lang, with_budget: bool = False, spans: bool =
         + (SPAN_RULE if spans else NO_SPAN_RULE) +
         "- Write natural spoken language as a professional subtitler would: concise and quick to read. "
         "Condense slightly rather than add words.\n"
-        "- Keep names as they are. Keep the marker <br> where it appears: it separates two speakers.\n"
+        + _NAMES.get(tgt.code, "- Keep names as they are. ") +
+        "Keep the marker <br> where it appears: it separates two speakers.\n"
         + (BUDGET_RULE if with_budget else "") +
         f"- {rules}\n"
     )
@@ -147,6 +155,24 @@ def misaligned(sources: list[str], answers: list[str], unspaced: bool = False) -
     own = _pearson(a, b)
     moved = max(_pearson(a[:n - k], b[k:]) if k > 0 else _pearson(a[-k:], b[:n + k]) for k in (-2, -1, 1, 2))
     return moved > 0.6 and moved > own + 0.25
+
+
+_CJK = re.compile(r"[\u3040-\u30ff\u3400-\u9fff]")
+_WORD = re.compile(r"[^\W\d_]+")
+
+
+def untranslated(sources: list[str], answers: list[str], tgt: Lang) -> int:
+    """How many answers are left in the source language: for Chinese and Japanese, an answer with
+    no character of the script for a line of two words and more; for the others, an answer that
+    is the line itself, for a line of three words and more."""
+    n = 0
+    for src, ans in zip(sources, answers):
+        words = _WORD.findall(src)
+        if tgt.code in ("zh", "yue", "ja"):
+            n += len(words) >= 2 and not _CJK.search(ans)
+        else:
+            n += len(words) >= 3 and _WORD.findall(ans.lower()) == [w.lower() for w in words]
+    return n
 
 
 @dataclass
@@ -232,11 +258,13 @@ class LlmTranslator:
         self.length_budget = length_budget
         self.spans = spans
         self.unspaced = False
+        self.tgt = Lang("en")
 
     def translate(self, texts: list[str], src: Lang, tgt: Lang,
                   durations: list[float] | None = None) -> tuple[list[tuple[str, int]], Usage]:
         usage = Usage()
         self.unspaced = tgt.code in ("zh", "yue", "ja")
+        self.tgt = tgt
         sys_msg = {"role": "system", "content": system_prompt(src, tgt, self.length_budget, self.spans)}
         budgets: dict[int, int] = {}
         if self.length_budget and durations:
@@ -275,7 +303,12 @@ class LlmTranslator:
                 by = dict(batch)
                 units = sorted(got.items())
                 sources = [" ".join(by[k] for k in range(a, b + 1)) for a, (b, _) in units]
-                if not misaligned(sources, [t for _, (_, t) in units], self.unspaced):
+                answers = [t for _, (_, t) in units]
+                left = untranslated(sources, answers, self.tgt)
+                if left > max(1, len(units) // 10):
+                    usage.rejected.append({"lines": f"{numbers[0]}-{numbers[-1]}", "untranslated": left, "answer": text[:8000]})
+                    return None
+                if not misaligned(sources, answers, self.unspaced):
                     return {a - 1: (b - 1, t) for a, (b, t) in got.items()}
                 usage.rejected.append({"lines": f"{numbers[0]}-{numbers[-1]}", "shifted": True, "answer": text[:8000]})
                 return None
@@ -283,6 +316,10 @@ class LlmTranslator:
             single = parse_answer(text, numbers)
             if len(single) == len(batch) and all(single.values()):
                 answers = [single[n] for n, _ in batch]
+                left = untranslated([t for _, t in batch], answers, self.tgt)
+                if left > max(1, len(batch) // 10):
+                    usage.rejected.append({"lines": f"{numbers[0]}-{numbers[-1]}", "untranslated": left, "answer": text[:8000]})
+                    return None
                 if not misaligned([t for _, t in batch], answers, self.unspaced):
                     return {n - 1: (n - 1, t) for n, t in single.items()}
                 usage.rejected.append({"lines": f"{numbers[0]}-{numbers[-1]}", "shifted": True, "answer": text[:8000]})

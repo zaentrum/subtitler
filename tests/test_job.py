@@ -247,7 +247,7 @@ def test_a_shifted_answer_is_asked_again():
 
     lens = (10, 60, 25, 80, 12, 35, 70, 20, 90, 14, 50, 41, 65, 18)
     texts = [("w " * (n // 2)).strip() for n in lens]
-    good = {i + 1: "z" * (n // 3) for i, n in enumerate(lens)}
+    good = {i + 1: "字" * (n // 3) for i, n in enumerate(lens)}
 
     class Fake:
         model = "x"
@@ -259,7 +259,7 @@ def test_a_shifted_answer_is_asked_again():
             self.calls += 1
             nums = sorted(good)
             if self.calls == 1:  # shifted by two, the count kept
-                vals = [good[n] for n in nums][2:] + ["z" * 4, "z" * 6]
+                vals = [good[n] for n in nums][2:] + ["字" * 4, "字" * 6]
             else:
                 vals = [good[n] for n in nums]
             assert "for context only" not in messages[-1]["content"]
@@ -306,3 +306,35 @@ def test_an_answer_over_two_sentences_covers_both_their_times():
     assert failures == 0
     assert [(c.start, c.text) for c in out] == [(0.0, "Eins und zwei."), (4.0, "Drei.")]
     assert out[0].end >= 2.0
+
+
+def test_an_answer_left_in_english_is_asked_again():
+    from subtitler.translate.llm import LlmTranslator, system_prompt, untranslated
+
+    zh = Lang.parse("zh-Hans")
+    lines = [f"Line {k} goes on for a while here." for k in range(12)]
+    assert untranslated(lines, lines, zh) == 12
+    assert untranslated(lines, ["这是一句话"] * 12, zh) == 0
+    assert untranslated(["Mara?"], ["Mara？"], zh) == 0  # a name alone is no sentence left untranslated
+    assert untranslated(lines, lines, Lang.parse("de")) == 12
+    assert "names in Chinese characters" in system_prompt(Lang.parse("en"), zh)
+    assert "Keep names as they are" in system_prompt(Lang.parse("en"), Lang.parse("de"))
+
+    class Fake:
+        model = "x"
+
+        def __init__(self):
+            self.calls = 0
+
+        def chat(self, messages, max_tokens, temperature=0.0, extra=None):
+            self.calls += 1
+            user = messages[-1]["content"]
+            nums = [int(m) for m in re.findall(r"^(\d+)\|", user, re.M)]
+            src = dict((int(a), b) for a, b in re.findall(r"^(\d+)\| (.*)$", user, re.M))
+            body = "\n".join(f"{n}| {src[n] if self.calls == 1 else '这是一句话'}" for n in nums)
+            return body, {"predicted_n": 10}, {}, 0.1
+
+    fake = Fake()
+    out, usage = LlmTranslator(fake, batch=20, after=0, spans=True).translate(lines, Lang.parse("en"), zh)
+    assert fake.calls == 2 and usage.rejected[0]["untranslated"] == 12
+    assert all(t == "这是一句话" for t, _ in out)
