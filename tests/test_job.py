@@ -367,3 +367,12 @@ def test_the_llama_cpp_release_is_read_from_its_version_line():
     assert job.llama_version("version: 0.6.0-dev (build 11430, commit 8345f3339)\nbuilt with GNU 13.3.0") == "b11430 (8345f3339)"
     assert job.llama_version("version: 4120 (a1b2c3d)") == "b4120 (a1b2c3d)"
     assert job.llama_version("no version here") == "unknown"
+
+
+def test_a_language_the_original_has_a_subtitle_of_its_own_in_is_not_made():
+    from tests.test_extract import PROBE as WITH_SUBS
+
+    own = job.own_languages(WITH_SUBS, [Lang.parse(x) for x in ("en", "de", "zh-Hans")])
+    assert own == {"en": 2, "zh-Hans": 4, "de": 6}  # the forced German one and the image one do not decide it
+    one = job.own_languages(PROBE, [Lang.parse(x) for x in ("en", "de", "zh-Hans")])
+    assert one == {"en": 4}  # this original's one subtitle stream: English SubRip

@@ -1,6 +1,6 @@
 [project]
 name = "subtitler"
-version = "0.2.0"
+version = "0.3.0"
 description = "Subtitles in an instance's languages for every title (ADR-0014): speech recognition and translation with open-weight models"
 readme = "README.md"
 license = "MPL-2.0"

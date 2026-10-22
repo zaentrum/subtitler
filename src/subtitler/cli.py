@@ -2,6 +2,7 @@
 
     subtitler plan PACKAGE --languages en,de,zh-Hans [--original-language it] [--exclude SOURCE ...]
     subtitler run  PACKAGE --out DIR --languages en,de,zh-Hans [options]
+    subtitler extract --titles titles.json --out DIR [options]            (extract.py: a title's own tracks)
     subtitler job  --titles titles.json --out DIR --models DIR [options]   (job.py: titles with no package yet)
 
 `plan` prints what would be done per language. `run` does it and writes
@@ -172,6 +173,10 @@ def main(argv: list[str] | None = None) -> int:
         from . import job
 
         return job.main(args[1:])
+    if args and args[0] == "extract":  # the source's own subtitles of titles with no package (extract.py)
+        from . import extract
+
+        return extract.main(args[1:])
     if args and args[0] == "transcribe":  # one title's speech recognition in a process of its own
         from . import transcribe
 

@@ -209,15 +209,47 @@ class Title:
     error: str | None = None
     read_seconds: float = 0.0
     gpu: dict = field(default_factory=dict)
+    own: dict = field(default_factory=dict)  # language tag -> the original's own stream that serves it
 
 
-def read_ahead(titles: list[Title], tmp: Path, readrate: float | None, ready: dict[str, threading.Event]) -> None:
-    """The main audio of each title, in order, ahead of the GPU work."""
+def own_languages(info: dict, langs: list[Lang]) -> dict[str, int]:
+    """The languages the original has a subtitle of its own in (ADR-0014: the source's own first): a
+    text or image stream of the language (Chinese of its script by the track title), not forced, not
+    commentary. A Chinese text stream whose title names no script is told by extract's check of its
+    characters, which needs the file read; here it counts for the Chinese wanted, so nothing is made
+    for a title a person subtitled."""
+    from . import extract
+
+    streams = extract.subtitle_streams(info)
+    picks, _ = extract.choose(streams, langs)
+    own: dict[str, int] = {}
+    for p in sorted(picks, key=lambda p: p.stream.sdh):  # the dialogue track before an SDH one
+        if not p.stream.forced:
+            own.setdefault(p.lang.tag, p.stream.index)
+    for s in streams:  # image subtitles a viewer can turn on count too
+        if not s.text and not s.forced and not s.commentary:
+            for l in langs:
+                if l.code == s.language and l.tag not in own and (l.code != "zh" or script.hints(s.title)["script"]
+                                                                     in (None, l.script or "Hans")):
+                    own[l.tag] = s.index
+    return own
+
+
+def read_ahead(titles: list[Title], tmp: Path, readrate: float | None, ready: dict[str, threading.Event],
+               langs: list[Lang] | None = None) -> None:
+    """The main audio of each title, in order, ahead of the GPU work; none for a title whose original
+    has a subtitle of its own in every language."""
+    langs = langs or []
     for t in titles:
         t0 = time.perf_counter()
         try:
             info = original.probe(t.original)
             t.duration = float((info.get("format") or {}).get("duration") or 0.0)
+            t.own = own_languages(info, langs)
+            if t.own and all(l.tag in t.own for l in langs):
+                say(f"{t.name}: the original has subtitles of its own in every language ("
+                    + ", ".join(f"{k}: stream {v}" for k, v in t.own.items()) + "): nothing to make")
+                continue
             streams = original.audio_streams(info)
             t.stream = original.main_audio(streams, t.language)
             if t.stream is None:
@@ -469,7 +501,7 @@ def main(argv: list[str] | None = None) -> int:
 
     tmp = Path(tempfile.mkdtemp(prefix="subtitler-audio-"))
     ready = {t.id: threading.Event() for t in titles}
-    reader = threading.Thread(target=read_ahead, args=(titles, tmp, a.readrate, ready), daemon=True)
+    reader = threading.Thread(target=read_ahead, args=(titles, tmp, a.readrate, ready, langs), daemon=True)
     reader.start()
     done = []
     for t in titles:
@@ -477,9 +509,17 @@ def main(argv: list[str] | None = None) -> int:
         if t.error:
             done.append({"id": t.id, "name": t.name, "errors": [t.error]})
             continue
+        missing = [l for l in langs if l.tag not in t.own]
+        if not missing:
+            done.append({"id": t.id, "name": t.name, "own": t.own, "made": [], "errors": []})
+            continue
+        if t.own:
+            say(f"{t.name}: the original has its own subtitles in " + ", ".join(t.own) + "; made only "
+                + ", ".join(l.tag for l in missing))
         r0 = time.perf_counter()
         try:
-            s = run_title(t, a, paths, langs, live, versions)
+            s = run_title(t, a, paths, missing, live, versions)
+            s["own"] = t.own
         except Exception as e:  # noqa: BLE001 - one title's failure is not the run's
             s = {"id": t.id, "name": t.name, "errors": [repr(e)]}
             say(f"{t.name}: failed: {e!r}")

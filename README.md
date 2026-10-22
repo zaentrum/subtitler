@@ -50,6 +50,26 @@ tool's.
 | `deploy/` | `job.yaml` (a run, placeholders); the spike's GPU bench: `Dockerfile`, `bench-job.yaml`, `run-gpu-bench.sh` |
 | `tests/` | the decision logic and the text handling (`pytest`) |
 
+## The source's own first
+
+A title with no package plays from its original file, and that file often
+carries subtitles people made. `subtitler extract` takes the original's
+subtitle streams in the instance's languages out as WebVTT, one file a
+stream (SDH and forced tracks each their own, so they keep what they are),
+on the CPU, in one read of the file; commentary is left out, image subtitles
+are listed as left out (no text without OCR), and Chinese is told apart by
+script (the track title, else its characters). Each file's entry in
+`extracted.json` says what attaching it takes: origin `source`, its language,
+SDH and forced. Nothing is attached by the tool.
+
+```sh
+subtitler extract --titles titles.json --out /work --languages en,de,zh-Hans --bundle
+```
+
+`subtitler job` makes nothing for a language the original has a subtitle of
+its own in (a text or image stream, not forced, not commentary), and nothing
+at all for a title that has one in every language.
+
 ## The run
 
 `subtitler job` takes a list of titles with no subtitle at all and makes
