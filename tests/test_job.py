@@ -361,3 +361,9 @@ def test_a_silent_word_far_from_the_rest_of_its_sentence_still_goes_with_it():
     speech = [(9.5, 10.6), (104.9, 106.1)]
     built = cues.build(words, "en", speech=speech)
     assert [c.text for c in built] == ["home.", "We're all here."]
+
+
+def test_the_llama_cpp_release_is_read_from_its_version_line():
+    assert job.llama_version("version: 0.6.0-dev (build 11430, commit 8345f3339)\nbuilt with GNU 13.3.0") == "b11430 (8345f3339)"
+    assert job.llama_version("version: 4120 (a1b2c3d)") == "b4120 (a1b2c3d)"
+    assert job.llama_version("no version here") == "unknown"

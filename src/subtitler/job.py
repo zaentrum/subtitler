@@ -171,10 +171,14 @@ class LlamaServer:
         self.log.close()
 
 
-def llama_version() -> str:
+def llama_version(text: str | None = None) -> str:
+    """llama.cpp's release as its tags name it ("b11430") and its commit, from `llama-server --version`:
+    "version: 0.6.0-dev (build 11430, commit 8345f3339)", or the older "version: 11430 (8345f3339)"."""
     try:
-        out = subprocess.run(["llama-server", "--version"], capture_output=True, text=True, timeout=30)
-        m = re.search(r"version:\s*(\d+)\s*\(([0-9a-f]+)\)", out.stdout + out.stderr)
+        if text is None:
+            out = subprocess.run(["llama-server", "--version"], capture_output=True, text=True, timeout=30)
+            text = out.stdout + out.stderr
+        m = re.search(r"build (\d+), commit ([0-9a-f]+)", text) or re.search(r"version:\s*(\d+)\s*\(([0-9a-f]+)\)", text)
         return f"b{m.group(1)} ({m.group(2)})" if m else "unknown"
     except Exception:
         return "unknown"
