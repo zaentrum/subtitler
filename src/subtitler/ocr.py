@@ -439,12 +439,14 @@ _CJK = re.compile(r"[　-〿぀-ヿ㐀-䶿一-鿿豈-﫿＀-￯]")
 
 def fix_latin(text: str, code: str) -> str:
     """What Tesseract confuses in subtitles of a Latin script: a pipe for a capital I, typographic
-    apostrophes; in English a lone lower-case l for I; in French, which puts a space before an
-    exclamation mark, a lone I, pipe or l there for the mark, and a ç within a sentence read as
-    capital."""
+    apostrophes, a lone double quote before a question or exclamation mark; in English a lone
+    lower-case l for I; in French, which puts a space before an exclamation mark, a lone I, pipe or
+    l there for the mark, and a ç within a sentence read as capital."""
     if code == "fr":
         text = re.sub(r"(?<= )[I|l]!?(?=\s|$)", "!", text)
         text = re.sub(r"(?<=[a-zà-ÿ,;] )Ç(?=[a-zà-ÿ])", "ç", text)
+    if sum(text.count(q) for q in '"“”„') == 1:  # a lone quote right before ? or ! is the mark's top, read twice
+        text = re.sub(r'(?<=\w)["“”](?=[?!])', "", text)
     text = text.replace("|", "I").replace("’", "'").replace("‘", "'")
     if code == "en":
         text = re.sub(r"(?<![\w'])l(?=(?:'(?:m|ll|ve|d)\b)|\s|$|[,.!?])", "I", text)
@@ -468,6 +470,35 @@ def wide_gaps(ink: np.ndarray, height: float) -> list[tuple[int, int]]:
     if not xs.size:
         return []
     return [(a + xs[0], b + xs[0]) for a, b in _runs(~cols[xs[0]:xs[-1] + 1]) if b - a >= 0.45 * height]
+
+
+def dots(ink: np.ndarray) -> tuple[int, int]:
+    """How many dots a line begins and ends with, by its pixels: marks small and low in the line,
+    one after the other (Tesseract leaves an ellipsis at a line's edge out, or reads it short)."""
+    rows = np.nonzero(ink.any(axis=1))[0]
+    if not rows.size:
+        return 0, 0
+    top, lh = rows[0], rows[-1] + 1 - rows[0]
+    segs = _runs(ink.any(axis=0))
+
+    def is_dot(a: int, b: int) -> bool:
+        ys = np.nonzero(ink[:, a:b].any(axis=1))[0]
+        return b - a <= 0.25 * lh and ys[-1] + 1 - ys[0] <= 0.25 * lh and ys[0] >= top + 0.5 * lh
+
+    lead = next((k for k, (a, b) in enumerate(segs) if not is_dot(a, b)), len(segs))
+    if lead == len(segs):  # dots alone
+        return 0, 0
+    trail = next((k for k, (a, b) in enumerate(reversed(segs)) if not is_dot(a, b)), 0)
+    return lead, trail
+
+
+def ellipses(text: str, lead: int, trail: int) -> str:
+    """A line's ellipses as its pixels have them: two or three dots at its start or end are '...'."""
+    if lead >= 2 and not text.startswith(("...", "…")):
+        text = "..." + text.lstrip(".…· ")
+    if trail >= 2 and not text.endswith(("...", "…")):
+        text = text.rstrip(".…· ") + "..."
+    return text
 
 
 def lines_of(words: list[Word], part: Part, code: str) -> list[Line]:
@@ -494,7 +525,7 @@ def lines_of(words: list[Word], part: Part, code: str) -> list[Line]:
         conf = sum(max(0.0, w.conf) * len(w.text) for w in ws) / max(1, chars)
         lean = slant(ink[y0:y1, x0:x1]) if code not in UNSPACED else 0.0
         if code in LATIN:
-            text = fix_latin(text, code)
+            text = ellipses(fix_latin(text, code), *dots(ink[y0:y1] if len(by) > 1 else ink))
         text = text.replace("\ufffd", "")  # the catalog takes no text that holds it
         out.append(Line(text, conf, chars, lean >= ITALIC_DEGREES, lean))
     return out

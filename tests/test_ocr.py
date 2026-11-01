@@ -74,6 +74,21 @@ def test_what_tesseract_confuses_is_put_right():
     assert ocr.fix_latin("- Viens vite I - Attends-moi I", "fr") == "- Viens vite ! - Attends-moi !"
     assert ocr.fix_latin("Voilà |", "fr") == "Voilà !" and ocr.fix_latin("Tu aimes pas Ça.", "fr") == "Tu aimes pas ça."
     assert ocr.fix_latin("Ça va, toll!", "de") == "Ça va, toll!"
+    assert ocr.fix_latin('Kom je morgen"?', "nl") == "Kom je morgen?" == ocr.fix_latin("Kom je morgen”?", "nl")
+    assert ocr.fix_latin('Er sagte: "Nein"?', "de") == 'Er sagte: "Nein"?'  # a pair of quotes stays
+
+
+def test_an_ellipsis_at_a_lines_edge_is_told_by_its_pixels():
+    ink = np.zeros((40, 300), dtype=bool)
+    for x in (2, 10, 18):  # three dots low in the line
+        ink[30:35, x:x + 5] = True
+    ink[2:38, 30:240:12] = True  # letters
+    for x in (250, 258):  # two dots at its end
+        ink[30:35, x:x + 5] = True
+    assert ocr.dots(ink) == (3, 2)
+    assert ocr.ellipses("en dan gaan we naar huis .", 3, 2) == "...en dan gaan we naar huis..."
+    assert ocr.ellipses("..We will see.", 3, 0) == "...We will see."
+    assert ocr.ellipses("...en toen?", 3, 0) == "...en toen?" and ocr.ellipses("Gut.", 0, 1) == "Gut."
 
 
 def test_tsv_words_become_lines():
