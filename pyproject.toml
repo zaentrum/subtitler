@@ -5,7 +5,8 @@ description = "Subtitles in an instance's languages for every title (ADR-0014): 
 readme = "README.md"
 license = "MPL-2.0"
 requires-python = ">=3.10"
-dependencies = ["opencc>=1.1"]
+# numpy: the image subtitles' pictures (PGS, VobSub) and their preparation for OCR.
+dependencies = ["opencc>=1.1", "numpy"]
 
 [project.optional-dependencies]
 # Speech recognition: faster-whisper on CTranslate2 (CPU, CUDA).
