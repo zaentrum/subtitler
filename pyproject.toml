@@ -20,7 +20,8 @@ zh = ["jieba>=0.42"]
 # Scores of the bench.
 eval = ["jiwer>=3", "sacrebleu>=2.4", "whisper-normalizer"]
 comet = ["unbabel-comet>=2.2"]
-dev = ["pytest"]
+# Tests: Pillow draws the text of the synthetic image subtitles (its own font).
+dev = ["pytest", "pillow"]
 
 [project.scripts]
 subtitler = "subtitler.cli:main"
