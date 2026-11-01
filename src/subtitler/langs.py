@@ -108,9 +108,10 @@ def name(code: str, script: str | None = None) -> str:
     return Lang(code, script).name
 
 
-ORIGIN_MARK = {"transcribed": "AI", "translated": "AI", "converted": "Converted"}
+ORIGIN_MARK = {"transcribed": "AI", "translated": "AI", "converted": "Converted", "recognized": "OCR"}
 
 
 def made_label(lang: Lang, origin: str) -> str:
-    """The label a made subtitle carries: "German · AI", "Chinese (Simplified) · Converted"."""
+    """The label a made subtitle carries: "German · AI", "Chinese (Simplified) · Converted",
+    "English · OCR" (a text copy of an image subtitle; ocr.label names one by its track's title)."""
     return f"{lang.name} · {ORIGIN_MARK[origin]}"

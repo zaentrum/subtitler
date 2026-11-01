@@ -1,7 +1,7 @@
 [project]
 name = "subtitler"
-version = "0.3.0"
-description = "Subtitles in an instance's languages for every title (ADR-0014): speech recognition and translation with open-weight models"
+version = "0.4.0"
+description = "Subtitles in an instance's languages for every title (ADR-0014): text copies of image subtitles (OCR), speech recognition and translation with open-weight models"
 readme = "README.md"
 license = "MPL-2.0"
 requires-python = ">=3.10"

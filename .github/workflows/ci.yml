@@ -20,7 +20,9 @@ jobs:
         with:
           python-version: '3.12'
       # The decision, the text handling, the checks and the run's logic; the
-      # models need a GPU and are not part of the tests.
+      # models need a GPU and are not part of the tests. Tesseract (Ubuntu's,
+      # for the tests alone) reads the synthetic image subtitles end to end.
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends tesseract-ocr ffmpeg
       - run: pip install -c requirements-image.txt -e '.[zh,dev]'
       - run: python -m pytest -q
 

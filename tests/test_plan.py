@@ -2,7 +2,7 @@
 
 from subtitler.langs import parse_list
 from subtitler.package import load
-from subtitler.plan import TRANSCRIPT, plan
+from subtitler.plan import COPY, TRANSCRIPT, copies, plan
 
 LANGS = parse_list("en,de,zh-Hans")
 
@@ -135,9 +135,9 @@ def test_commentary_is_no_subtitle(make_package):
     assert choices(root)["en"].action == "transcribe"
 
 
-def test_image_subtitle_counts_as_present_but_is_no_source(make_package):
+def test_without_ocr_an_image_subtitle_counts_as_present_but_is_no_source(make_package):
     root = make_package(subs=[{"language": "ger", "format": "pgs"}, {"language": "eng", "format": "pgs"}])
-    c = choices(root)
+    c = choices(root, ocr=False)
     assert c["de"].action == "keep" and c["en"].action == "keep"
     # Nothing readable to translate from: Chinese comes from the audio.
     assert c["zh-Hans"].source == TRANSCRIPT
@@ -185,3 +185,88 @@ def test_traditional_target_converts_from_simplified(make_package):
     root = make_package(subs=[{"language": "chi", "kind": "Hans"}])
     c = choices(root, parse_list("zh-Hant"))["zh-Hant"]
     assert c.action == "convert" and c.detail["config"] == "s2t"
+
+
+def test_an_image_subtitle_gets_a_text_copy_that_is_present_and_a_source(make_package):
+    root = make_package(subs=[{"language": "ger", "format": "pgs"}, {"language": "eng", "format": "pgs"}])
+    c = choices(root)
+    assert (c["de"].action, c["de"].source) == ("recognize", COPY + "sub0")
+    assert (c["en"].action, c["en"].source) == ("recognize", COPY + "sub1")
+    # Chinese is translated from the English copy (English before German), the audio last.
+    order = [x.source for x in plan(load(root), LANGS)[2].candidates]
+    assert order == [COPY + "sub1", COPY + "sub0", TRANSCRIPT]
+    assert plan(load(root), LANGS)[2].candidates[0].action == "translate"
+
+
+def test_a_text_subtitle_of_the_language_and_kind_needs_no_copy(make_package):
+    root = make_package(subs=[{"language": "eng"}, {"language": "eng", "format": "pgs"},
+                              {"language": "eng", "format": "pgs", "purpose": "sdh", "title": "SDH"},
+                              {"language": "eng", "format": "pgs", "forced": True, "purpose": "forced", "cues": 6}])
+    made = {(x.sub.id, x.kind) for x in copies(load(root), LANGS)}
+    # The full one has a text track beside it; SDH and forced are kinds of their own.
+    assert made == {("sub2", "sdh"), ("sub3", "forced")}
+    assert choices(root)["en"].action == "keep"
+
+
+def test_one_copy_a_language_and_kind_the_fullest_and_no_commentary(make_package):
+    root = make_package(subs=[{"language": "eng", "format": "pgs", "cues": 30}, {"language": "eng", "format": "pgs"},
+                              {"language": "eng", "format": "pgs", "purpose": "commentary"},
+                              {"language": "fre", "format": "pgs"}])
+    made = copies(load(root), LANGS)
+    assert [(x.sub.id, x.kind) for x in made] == [("sub1", "full")]  # French is no language of the instance
+
+
+def test_a_sparse_image_track_is_copied_as_signs_and_is_no_source(make_package):
+    root = make_package(audio=[("jpn", True)], subs=[{"language": "eng", "format": "pgs", "cues": 5},
+                                                     {"language": "eng", "format": "pgs", "cues": 40}])
+    made = {x.sub.id: x.kind for x in copies(load(root), LANGS)}
+    assert made == {"sub0": "signs", "sub1": "full"}
+    assert choices(root)["de"].source == COPY + "sub1"
+
+
+def test_a_vobsub_track_is_copied_too(make_package):
+    root = make_package(subs=[{"language": "ger", "format": "vobsub"}])
+    assert [(x.sub.format, x.lang.tag) for x in copies(load(root), LANGS)] == [("vobsub", "de")]
+    assert choices(root)["de"].action == "recognize"
+
+
+def test_a_traditional_image_track_is_copied_then_converted(make_package):
+    root = make_package(subs=[{"language": "chi", "format": "pgs", "title": "繁體中文"}])
+    made = copies(load(root), LANGS)
+    assert [x.lang.tag for x in made] == ["zh-Hant"]
+    c = choices(root)["zh-Hans"]
+    assert (c.action, c.source, c.detail["config"]) == ("convert", COPY + "sub0", "t2s")
+
+
+def test_a_chinese_image_track_of_no_script_said_is_read_then_kept_or_converted(make_package):
+    root = make_package(subs=[{"language": "chi", "format": "pgs", "title": ""}])
+    cands = plan(load(root), LANGS)[2].candidates
+    assert [(x.action, x.source) for x in cands[:2]] == [("recognize", COPY + "sub0"), ("convert", COPY + "sub0")]
+
+
+def test_a_report_on_a_copy_moves_to_the_next_candidate(make_package):
+    root = make_package(audio=[("eng", True)], subs=[{"language": "eng", "format": "pgs"}])
+    assert choices(root)["en"].action == "recognize"
+    c = choices(root, exclude=[COPY + "sub0"])
+    assert c["en"].action == "transcribe" and c["de"].source == TRANSCRIPT
+
+
+def test_a_text_subtitle_goes_before_a_copy_of_the_same_rank(make_package):
+    root = make_package(audio=[("kor", True)], subs=[{"language": "eng", "format": "pgs", "purpose": "sdh"},
+                                                     {"language": "eng"}, {"language": "ger", "format": "pgs"}])
+    assert [x.sub.id for x in copies(load(root), LANGS)] == ["sub0", "sub2"]
+    zh = [x.source for x in plan(load(root), LANGS)[2].candidates]
+    assert zh == ["sub1", COPY + "sub0", COPY + "sub2", TRANSCRIPT]  # English text, its SDH copy, the German copy
+
+
+def test_only_the_image_tracks_of_the_languages_are_read_to_count_them(make_package):
+    root = make_package(subs=[{"language": "eng", "format": "pgs", "cues": 12}, {"language": "fre", "format": "pgs"}])
+    read = []
+
+    def reader(path):
+        read.append(path.name)
+        return path.read_bytes()
+
+    pkg = load(root, {"en", "de", "zh"}, reader)
+    assert read == ["0.sup"] and [s.cues for s in pkg.subtitles] == [12, None]
+    assert [s.cues for s in load(root, count=False).subtitles] == [None, None]

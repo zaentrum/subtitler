@@ -2,9 +2,10 @@
 
 Reads package.json (the packager's manifest of a version folder):
 `renditions.audio` (stereo renditions, the main one `default`) and
-`subtitles` (language, title, forced, purpose, format, path). Each subtitle
-gets an ISO 639-1 language, its Chinese script and region where it is
-Chinese, and whether its file is on disk.
+`subtitles` (language, title, forced, purpose or sdh, format, path). Each
+subtitle gets an ISO 639-1 language, its Chinese script and region where it
+is Chinese, whether its file is on disk, and how many cues it has (an image
+subtitle: how many pictures it shows).
 """
 
 from __future__ import annotations
@@ -17,9 +18,12 @@ from . import script, vtt
 from .langs import iso1
 
 TEXT_FORMATS = {"webvtt", "vtt", "srt", "subrip", "ass", "ssa", "mov_text", "ttml", "text"}
-# Image subtitles a client can draw: they count as present in their language,
-# but they are no source for a translation (they would need OCR first).
+# Image subtitles a client can draw. Without OCR they count as present in
+# their language and are no source for a translation; with it they get a text
+# copy (ocr.py), which is both.
 SHOWN_IMAGE_FORMATS = {"pgs", "hdmv_pgs_subtitle", "sup"}
+# Image subtitles the OCR step reads: PGS (.sup) and VobSub (.idx + .sub).
+BITMAP_FORMATS = SHOWN_IMAGE_FORMATS | {"vobsub", "dvd_subtitle", "idx"}
 
 
 @dataclass
@@ -44,6 +48,14 @@ class Subtitle:
     @property
     def is_text(self) -> bool:
         return self.format.lower() in TEXT_FORMATS
+
+    @property
+    def is_bitmap(self) -> bool:
+        return self.format.lower() in BITMAP_FORMATS
+
+    @property
+    def is_pgs(self) -> bool:
+        return self.format.lower() in SHOWN_IMAGE_FORMATS
 
     @property
     def is_full(self) -> bool:
@@ -118,7 +130,23 @@ def _count_cues(path: Path) -> int:
         return 0
 
 
-def load(root: str | Path) -> Package:
+def _count_pictures(sub: Subtitle, path: Path, read=None) -> int | None:
+    """An image subtitle's pictures, counted from its headers (no pixels decoded)."""
+    from . import pgs, vobsub
+
+    try:
+        if sub.is_pgs:
+            return pgs.count_bytes(read(path)) if read else pgs.count(path)
+        return len(vobsub.read_idx(path.read_text(encoding="latin-1"))["entries"])
+    except (OSError, ValueError):
+        return None
+
+
+def load(root: str | Path, languages: set[str] | None = None, read=None, count: bool = True) -> Package:
+    """A package as package.json says it. An image subtitle's pictures are counted where it is in
+    one of `languages` (ISO 639-1; all without), its file read by `read` where that is given (a
+    paced read, which can keep the bytes for the OCR step); count=False reads package.json alone
+    (no cue counted, no track found sparse)."""
     root = Path(root)
     data = json.loads((root / "package.json").read_text(encoding="utf-8"))
     minutes = (data.get("durationMs") or 0) / 60000
@@ -128,19 +156,27 @@ def load(root: str | Path) -> Package:
     subs = []
     for s in data.get("subtitles") or []:
         path = s.get("path") or ""
+        purpose = s.get("purpose") or ("forced" if s.get("forced") else "dialogue")
+        if s.get("sdh") and purpose == "dialogue":
+            purpose = "sdh"
         sub = Subtitle(
             id=s.get("id", path), path=path, language=iso1(s.get("language")), title=s.get("title") or "",
-            forced=bool(s.get("forced")), purpose=s.get("purpose") or ("forced" if s.get("forced") else "dialogue"),
+            forced=bool(s.get("forced")), purpose=purpose,
             format=(s.get("format") or Path(path).suffix.lstrip(".") or "").lower(),
             visible=bool(s.get("visible", True)), exists=bool(path) and (root / path).is_file())
-        if sub.exists and sub.is_text:
+        if count and sub.exists and sub.is_text:
             sub.cues = _count_cues(root / path)
+        elif count and sub.exists and sub.is_bitmap and (languages is None or sub.language in languages):
+            sub.cues = _count_pictures(sub, root / path, read)
         if sub.language in ("zh", "yue"):
             _detect_chinese(sub, root)
         subs.append(sub)
-    # A text track far sparser than the title's fullest one, or under a cue a
-    # minute, is signs and songs: no subtitle of its language.
-    counts = [s.cues for s in subs if s.cues and not s.forced and s.purpose != "commentary"]
+    # A track far sparser than the title's fullest one, or under a cue a
+    # minute, is signs and songs: no subtitle of its language. The fullest is
+    # a text track where the title has one: an image track's pictures count
+    # an animated sign many times.
+    counts = [s.cues for s in subs if s.cues and not s.forced and s.purpose != "commentary" and s.is_text]
+    counts = counts or [s.cues for s in subs if s.cues and not s.forced and s.purpose != "commentary"]
     fullest = max(counts) if counts else 0
     for s in subs:
         if s.cues is not None and minutes >= 10:

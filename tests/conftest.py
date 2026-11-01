@@ -22,6 +22,16 @@ LINES = {
 }
 
 
+def sup_bytes(n: int = 40) -> bytes:
+    """A PGS track of n pictures (blocks, no text), one every 3 seconds."""
+    import numpy as np
+    from synth import clear, show
+
+    b = np.zeros((20, 80), dtype=np.uint8)
+    b[4:16, 4:76:6] = 1
+    return b"".join(show(2.0 + 3 * i, [(0, 100, 900, b)]) + clear(4.0 + 3 * i) for i in range(n))
+
+
 def vtt_text(kind: str, n: int = 40) -> str:
     out = ["WEBVTT", ""]
     for i in range(n):
@@ -46,7 +56,7 @@ def make_package(tmp_path):
         entries = []
         for i, s in enumerate(subs):
             fmt = s.get("format", "webvtt")
-            path = f"subs/{i}.{'vtt' if fmt == 'webvtt' else 'sup'}"
+            path = f"subs/{i}.{ {'webvtt': 'vtt', 'vobsub': 'idx'}.get(fmt, 'sup') }"
             if s.get("exists", True):
                 if fmt == "webvtt":
                     from subtitler.langs import iso1
@@ -54,8 +64,12 @@ def make_package(tmp_path):
                     code = iso1(s["language"])
                     kind = s.get("kind") or ("Hans" if code == "zh" else code)
                     (root / path).write_text(vtt_text(kind, s.get("cues", 40)), encoding="utf-8")
+                elif fmt == "vobsub":
+                    (root / path).write_text("size: 720x480\n" + "".join(
+                        f"timestamp: 00:00:{2 + 3 * k:02d}:000, filepos: {k:09x}\n" for k in range(s.get("cues", 18))))
+                    (root / path).with_suffix(".sub").write_bytes(b"")
                 else:
-                    (root / path).write_bytes(b"PG\x00\x00")
+                    (root / path).write_bytes(sup_bytes(s.get("cues", 40)))
             entries.append({"id": f"sub{i}", "path": path, "language": s["language"], "title": s.get("title", ""),
                             "forced": s.get("forced", False), "purpose": s.get("purpose", "dialogue"),
                             "format": fmt, "visible": s.get("visible", True)})

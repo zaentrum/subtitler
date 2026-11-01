@@ -15,14 +15,21 @@ the languages, dialogue, SDH and forced alike — each its own file, so SDH and
 forced tracks keep what they are. Commentary is left out. Chinese is told
 apart by script: the track title where it says Simplified or Traditional
 (script.hints), else the characters themselves (script.detect_script);
-written Cantonese is another language and never stands for zh-Hans. Image
-streams (PGS, VobSub) become no text without OCR: they are listed as left out.
+written Cantonese is another language and never stands for zh-Hans.
+
+Then the image streams: a PGS stream in one of the languages, of a kind
+(full, SDH, forced) no text stream of its language is, gets a text copy
+(OCR, ocr.py), one a language and kind: it is copied out of the file in the
+same read (as .sup) and read by Tesseract. A copy that reads too unsurely is
+left out and said so; VobSub and DVB streams in an original are left out
+(their pictures are not copied out of the file here).
 
 Out, per title, in <DIR>/<id>/: <tag>[.sdh][.forced]-<stream>.vtt (a NOTE says
-which stream it came from), and extracted.json: per file its language, SDH,
-forced, the stream's index, codec and title, cues, and what attaching it
-takes (origin "source": made by people, taken from the title's own file).
-Nothing is attached here.
+which stream it came from, and for a copy how it was read), and
+extracted.json: per file its language, SDH, forced, the stream's index,
+codec and title, cues, and what attaching it takes (origin "source": made
+by people, taken from the title's own file; "recognized" for a text copy of
+an image stream, label "<its title> · OCR"). Nothing is attached here.
 """
 
 from __future__ import annotations
@@ -43,6 +50,7 @@ from .langs import Lang, iso1, parse_list
 from .original import probe
 
 TEXT_CODECS = {"subrip", "srt", "ass", "ssa", "webvtt", "mov_text", "text"}
+PGS_CODECS = {"hdmv_pgs_subtitle"}
 _COMMENTARY = ("commentary", "comment", "kommentar")
 
 
@@ -64,6 +72,10 @@ class SubStream:
     @property
     def text(self) -> bool:
         return self.codec in TEXT_CODECS
+
+    @property
+    def kind(self) -> str:
+        return "forced" if self.forced else "sdh" if self.sdh else "full"
 
 
 def subtitle_streams(info: dict) -> list[SubStream]:
@@ -90,19 +102,26 @@ class Pick:
     stream: SubStream
     lang: Lang  # the instance's language it serves (zh-Hans for a Simplified track)
     script_from: str  # "title", "text" or "" (no script to tell)
+    ocr: bool = False  # an image stream, read into its text copy
 
     @property
     def name(self) -> str:
         kind = (".sdh" if self.stream.sdh else "") + (".forced" if self.stream.forced else "")
         return f"{self.lang.tag}{kind}-{self.stream.index}.vtt"
 
+    @property
+    def taken(self) -> str:
+        """The file ffmpeg writes: the WebVTT of a text stream, the .sup of an image stream."""
+        return self.name + (".sup" if self.ocr else ".part")
 
-def choose(streams: list[SubStream], langs: list[Lang]) -> tuple[list[Pick], list[dict]]:
+
+def choose(streams: list[SubStream], langs: list[Lang], ocr: bool = True) -> tuple[list[Pick], list[dict]]:
     """The streams to take out for the languages, and the ones of those languages left out, with why.
 
     A Chinese stream whose title names no script is picked for the Chinese language wanted and its
-    script checked against the text after extraction (finish)."""
-    picks, left = [], []
+    script checked against the text after extraction (finish). With ocr, a PGS stream of a language
+    and kind no text stream picked is gets its text copy, one a language and kind."""
+    picks, left, images = [], [], []
     for s in streams:
         want = [l for l in langs if l.code == s.language]
         if not want:
@@ -111,7 +130,7 @@ def choose(streams: list[SubStream], langs: list[Lang]) -> tuple[list[Pick], lis
             left.append({"stream": s.index, "why": "commentary"})
             continue
         if not s.text:
-            left.append({"stream": s.index, "why": f"an image subtitle ({s.codec}): no text without OCR"})
+            images.append((s, want))
             continue
         if s.language == "zh":
             h = script.hints(s.title)
@@ -128,6 +147,35 @@ def choose(streams: list[SubStream], langs: list[Lang]) -> tuple[list[Pick], lis
             picks.append(Pick(s, want[0], ""))
             continue
         picks.append(Pick(s, want[0], ""))
+    copied: set[tuple] = set()
+    for s, want in images:
+        if not ocr:
+            left.append({"stream": s.index, "why": f"an image subtitle ({s.codec}): no text without OCR"})
+            continue
+        if s.codec not in PGS_CODECS:
+            left.append({"stream": s.index, "why": f"an image subtitle ({s.codec}): only PGS is read in an original"})
+            continue
+        lang = want[0]
+        if s.language == "zh":
+            h = script.hints(s.title)
+            if h["cantonese"]:
+                left.append({"stream": s.index, "why": "written Cantonese"})
+                continue
+            match = [l for l in want if h["script"] in (None, l.script or "Hans")]
+            if not match:
+                left.append({"stream": s.index, "why": f"Chinese in the other script ({h['script']})"})
+                continue
+            lang = match[0]
+        if any(p.lang == lang and p.stream.kind == s.kind for p in picks if not p.ocr):
+            left.append({"stream": s.index, "why": f"an image subtitle: a text stream of its language and kind "
+                                                    f"({s.kind}) is taken"})
+            continue
+        if (lang.tag, s.kind) in copied:
+            left.append({"stream": s.index, "why": f"an image subtitle: another of its language and kind ({s.kind}) "
+                                                    f"is read"})
+            continue
+        copied.add((lang.tag, s.kind))
+        picks.append(Pick(s, lang, "title" if s.language == "zh" and script.hints(s.title)["script"] else "", ocr=True))
     return picks, left
 
 
@@ -139,14 +187,63 @@ def extract(path: str | Path, picks: list[Pick], folder: Path, readrate: float |
         cmd += ["-readrate", f"{readrate:g}"]
     cmd += ["-i", str(path)]
     for p in picks:
-        cmd += ["-map", f"0:{p.stream.index}", "-c:s", "webvtt", "-f", "webvtt", str(folder / (p.name + ".part"))]
+        if p.ocr:  # the pictures as they are, for the OCR step
+            cmd += ["-map", f"0:{p.stream.index}", "-c:s", "copy", "-f", "sup", str(folder / p.taken)]
+        else:
+            cmd += ["-map", f"0:{p.stream.index}", "-c:s", "webvtt", "-f", "webvtt", str(folder / p.taken)]
     subprocess.run(cmd, check=True)
 
 
-def finish(picks: list[Pick], folder: Path, title_id: str) -> tuple[list[dict], list[dict]]:
-    """Each extracted file checked (cues, Chinese script by its characters), given its NOTE, and listed."""
+def recognize(p: Pick, folder: Path, tessdata: str | None = None, jobs: int = 0,
+              min_confidence: float | None = None, models: str | None = None) -> tuple[dict | None, dict | None]:
+    """The text copy of an image stream taken out: (its entry, None), or (None, why it is left out)."""
+    from . import ocr, pgs
+
+    sup = folder / p.taken
+    try:
+        pictures = pgs.read(sup) if sup.exists() else []
+        if not pictures:
+            return None, {"stream": p.stream.index, "why": "no picture in the image stream"}
+        bilingual = script.hints(p.stream.title)["bilingual"]
+        want = p.lang if p.script_from else Lang(p.lang.code)
+        lang, r = ocr.read_pictures(pictures, want, tessdata, jobs,
+                                    ocr.MIN_CONFIDENCE if min_confidence is None else min_confidence, bilingual, models)
+    except (LookupError, ValueError, OSError, RuntimeError) as e:
+        return None, {"stream": p.stream.index, "why": f"no text copy: {e}"}
+    finally:
+        sup.unlink(missing_ok=True)
+    if lang.code == "zh" and lang.script != (p.lang.script or "Hans"):
+        return None, {"stream": p.stream.index, "why": f"Chinese in the other script ({lang.script}, by reading it)"}
+    if not r.accepted:
+        return None, {"stream": p.stream.index, "why": f"its text copy is left out: {r.rejected}", "ocr": r.summary()}
+    kind = p.stream.kind
+    lbl = ocr.label(p.stream.title, p.lang, kind)
+    what = f"stream {p.stream.index} ({p.stream.codec}" + (f", '{p.stream.title}'" if p.stream.title else "") + ")"
+    vtt.write(folder / p.name, r.cues, notes=[f"{lbl}. Made by subtitler {__version__}: the text of the title's own "
+                                              f"image subtitle, {what} of its original file, recognized (OCR) by "
+                                              f"{r.engine} with its {r.model} model; mean confidence "
+                                              f"{r.confidence:.1f}."])
+    return {"file": p.name, "language": p.lang.tag, "sdh": p.stream.sdh, "forced": p.stream.forced,
+            "stream": p.stream.index, "codec": p.stream.codec, "title": p.stream.title or None,
+            "scriptFrom": p.script_from or "reading" if p.lang.code == "zh" else None, "cues": len(r.cues),
+            "first": vtt.timestamp(r.cues[0].start), "last": vtt.timestamp(r.cues[-1].end), "ocr": r.summary(),
+            "attach": {"language": p.lang.tag, "label": lbl, "origin": "recognized", "sdh": p.stream.sdh,
+                       "forced": p.stream.forced, "format": "webvtt"}}, None
+
+
+def finish(picks: list[Pick], folder: Path, title_id: str, tessdata: str | None = None, jobs: int = 0,
+           min_confidence: float | None = None, models: str | None = None) -> tuple[list[dict], list[dict]]:
+    """Each extracted file checked (cues, Chinese script by its characters), given its NOTE, and listed;
+    each image stream taken out read into its text copy."""
     made, left = [], []
     for p in picks:
+        if p.ocr:
+            entry, why = recognize(p, folder, tessdata, jobs, min_confidence, models)
+            if entry:
+                made.append(entry)
+            else:
+                left.append(why)
+            continue
         part = folder / (p.name + ".part")
         cues = vtt.read(part) if part.exists() else []
         if not cues:
@@ -206,6 +303,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--languages", default="en,de,zh-Hans")
     ap.add_argument("--readrate", type=float, default=30.0)
     ap.add_argument("--bundle", action="store_true")
+    ap.add_argument("--ocr", action=argparse.BooleanOptionalAction, default=True,
+                    help="text copies of PGS streams of a language and kind no text stream is")
+    ap.add_argument("--tessdata", default=None, help="Tesseract's models (default: its own)")
+    ap.add_argument("--ocr-jobs", type=int, default=0)
+    ap.add_argument("--min-confidence", type=float, default=None)
+    ap.add_argument("--models", default=None, help="a folder a model Tesseract lacks is fetched into")
     a = ap.parse_args(argv)
     langs = parse_list(a.languages)
     titles = json.loads(Path(a.titles).read_text())
@@ -218,13 +321,13 @@ def main(argv: list[str] | None = None) -> int:
         t0 = time.perf_counter()
         try:
             streams = subtitle_streams(probe(t["original"]))
-            picks, left = choose(streams, langs)
+            picks, left = choose(streams, langs, ocr=a.ocr)
             say(f"{name}: {len(streams)} subtitle streams; taking out " +
                 (", ".join(f"{p.stream.index} {p.lang.tag}{' sdh' if p.stream.sdh else ''}{' forced' if p.stream.forced else ''}"
-                           for p in picks) or "none"))
+                           f"{' (OCR)' if p.ocr else ''}" for p in picks) or "none"))
             if picks:
                 extract(t["original"], picks, folder, a.readrate)
-            made, more = finish(picks, folder, t["id"])
+            made, more = finish(picks, folder, t["id"], a.tessdata, a.ocr_jobs, a.min_confidence, a.models)
             left += more
             missing = [l.tag for l in langs if not any(m["language"] == l.tag and not m["forced"] for m in made)]
             r = {"id": t["id"], "name": name, "made_by": f"subtitler {__version__}", "streams": len(streams),
