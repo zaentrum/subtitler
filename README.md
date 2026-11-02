@@ -15,8 +15,9 @@ package yet, from their original files, on one GPU beside live playback
 
 Nothing here touches a package or an original: the commands write into a
 folder of their own and refuse one inside the package. Attaching what they
-made to a title is the catalog's business (its attach endpoint), not this
-tool's.
+made to a title is the catalog's business, through its attach endpoint;
+`subtitler attach` sends the text copies of image subtitles there, each
+checked first against what the title plays and has.
 
 ## The picks
 
@@ -51,6 +52,7 @@ tool's.
 | `src/subtitler/pgs.py`, `vobsub.py` | image subtitles: PGS (`.sup`) and VobSub (`.idx` + `.sub`) decoded into what they show, when |
 | `src/subtitler/ocr.py` | their text copies: pictures prepared, read by Tesseract, lines, italics, confidence, cues, labels |
 | `src/subtitler/recognize.py` | `subtitler ocr`: the text copies of packaged titles, title by title, paced |
+| `src/subtitler/attach.py` | `subtitler attach`: a run's text copies attached through the catalog's seam, each checked against the version the title plays and the subtitles it has |
 | `src/subtitler/cli.py` | `subtitler plan` and `subtitler run` |
 | `bench/` | the local measurements (`asr_run`, `asr_score`, `mt_run`, `mt_score`, `comet_score`, `opencc_demo`, `samples`, `summary`, `ocr_score`) and the GPU run (`gpu_bench`) |
 | `src/subtitler/job.py`, `original.py`, `transcribe.py`, `qc.py`, `models.py` | `subtitler job`: titles from their originals, the checks, the models |
@@ -66,11 +68,14 @@ subtitle streams in the instance's languages out as WebVTT, one file a
 stream (SDH and forced tracks each their own, so they keep what they are),
 on the CPU, in one read of the file; commentary is left out, and Chinese is
 told apart by script (the track title, else its characters). A PGS stream
-of a language and kind no text stream is gets its text copy (OCR, below)
-from the same read; VobSub and DVB streams of an original are listed as
-left out. Each file's entry in `extracted.json` says what attaching it
-takes: origin `source` (`recognized` for a text copy), its language, label,
-SDH and forced. Nothing is attached by the tool.
+of a language and kind no text stream is gets its text copy (OCR, below):
+its pictures are copied out in a read of the file of their own, after the
+text streams', so that a stream ffmpeg cannot copy out costs the text
+streams nothing; VobSub and DVB streams of an original are listed as left
+out. Each file's entry in `extracted.json` says what attaching it takes:
+origin `source`, its language, label, SDH and forced; the text copies are
+listed apart (`recognized`, origin `recognized`). Nothing is attached by
+the tool.
 
 ```sh
 subtitler extract --titles titles.json --out /work --languages en,de,zh-Hans --bundle
@@ -126,50 +131,94 @@ How (`ocr.py`):
    picture has a wide gap there;
 4. a line whose strokes lean 7° or more (the shear that makes its columns
    of ink sharpest) is set in `<i>`;
-5. a cue a picture; pictures in a row that read the same are one cue.
+5. a cue a picture; pictures in a row that read the same are one cue; a cue
+   of one or two characters read under a confidence of 50 is left out (what
+   a graphic or a stray mark reads as), and a `#` at a line's edge is the
+   music note it stands for (Tesseract reads ♪ so).
 
-A copy whose confidence (Tesseract's, over its characters) is under 80 is
-not attached: it is written aside (`not-attached-<file>`) and the report
-says why, and its language's next candidate makes the language's subtitle.
+A copy is not attached, its file written aside
+(`not-attached-<track>.<file>`) and the report saying why, and its
+language's next candidate makes the language's subtitle, where
+
+- its confidence (Tesseract's, over its characters) is under 80;
+- more than a tenth of its pictures read as nothing, as such a stray mark,
+  or under 50 (graphics, a font Tesseract does not read; the 45 tracks
+  measured below: 2 % at most);
+- it reads as another language than its track's, as a track tagged with
+  the wrong language reads almost as surely with that language's model
+  (German read with the English model at 90): Chinese whose letters are
+  under half Chinese characters (a twentieth for a bilingual track); a
+  language with a list of its commonest words (English, German, French,
+  Spanish, Italian, Dutch, Swedish, Danish, Norwegian, Finnish, Polish,
+  Portuguese) whose words another's outnumber in it. Per copy of the tracks
+  measured, its own language's are 21-50 % of its words, any other's 25 %
+  at most; Danish and Norwegian (35-39 % of each other's) are not told
+  apart;
+- a copy of its language and kind is made already (two Chinese tracks read
+  as the same script: the first one's is kept).
+
 A language without a Tesseract model is not read, and said so; a model the
 image does not have is fetched into `--models` (tessdata_fast 4.1.0;
-tessdata_best for Chinese).
+tessdata_best for Chinese) and checked against its SHA-256, which this
+repository keeps for every model a language is read with. A track whose
+picture claims more than its video's size (or 4096 pixels on a side) is
+not decoded.
 
 The label is the track's own name and a plain mark, as a made subtitle's
 says how it was made ("German · AI"): "English (Forced) · OCR", or the
 language's where the track has none ("English · OCR", "English · SDH ·
-OCR"); words of the image format ("PGS") are left out, the copy is text.
-Its origin is `recognized` (the catalog's attach seam takes it once
+OCR"); words of the image format ("PGS") are left out, the copy is text. A
+name longer than the catalog keeps (120 characters) is cut, and the mark
+kept. Its origin is `recognized` (the catalog's attach seam takes it once
 katalog-manager lists it among its origins beside `source`, `provider`,
 `transcribed`, `translated` and `converted`); forced and SDH are carried
-(`<tag>.forced.vtt`, `<tag>.sdh.vtt`), and the NOTE of its file says which
-track it was read from, by which Tesseract and model, and with what
-confidence.
+(`<tag>.forced.vtt`, `<tag>.sdh.vtt`). A copy of a track of signs and songs
+(`<tag>.signs.vtt`) is attached as forced, its label saying so ("English ·
+Signs · OCR"), which is how the catalog's rows tell it from a forced track.
+The NOTE of its file says which track it was read from, by which Tesseract
+and model, and with what confidence.
 
 ```sh
 subtitler ocr --titles titles.json --out /work --languages en,de,zh-Hans --hours 22-17 --read-mbps 20 [--dry-run]
 ```
 
 ```json
-[{"id": "ITEM_ID", "name": "S01E06", "package": "/media/PATH/versions/VERSION_ID"}]
+[{"id": "ITEM_ID", "name": "S01E06", "package": "/media/PATH/versions/VERSION_ID", "version": "VERSION_ID"}]
 ```
 
 `subtitler ocr` does it for packaged titles, title by title, on the CPU:
-`<out>/<id>/<tag>[.sdh|.forced|.signs].vtt` and `ocr.json` (each file with
-what attaching it takes, the copies not attached with why). It reads the
-store only within `--hours` (UTC; by default never 17-22, the evening's
-playback), each image track of the languages once and at most
-`--read-mbps`, a pause between titles; a title done in a run before is not
-read again (`--again` reads it), so a run cut short goes on where it
-stopped; `--dry-run` reads package.json alone and says what it would read.
-`subtitler run` makes a package's copies first and then the rest from them;
-`subtitler extract` copies an original's PGS streams in the same read of
-the file as its text streams (`--no-ocr` leaves them out, as before).
+`<out>/<id>/<tag>[.sdh|.forced|.signs].vtt` and `ocr.json` (the version the
+copies were read from, each file with what attaching it takes, the copies
+not attached with why). It reads the store only within `--hours` (UTC; by
+default never 17-22, the evening's playback), each image track of the
+languages once and at most `--read-mbps`, a pause between titles; a title
+done in a run before is not read again (`--again` reads it), so a run cut
+short goes on where it stopped. A title is marked while it is read: one a
+run was killed in without warning (out of memory) is recorded as failed by
+the next run and left out; a run stopped by SIGTERM (its deadline) takes
+the mark away first. `--dry-run` reads package.json alone and says what it
+would read. `subtitler run` makes a package's copies first and then the
+rest from them; `subtitler extract` copies an original's PGS streams in a
+read of their own after its text streams' (`--no-ocr` leaves them out, and
+`subtitler plan --no-ocr` plans as before OCR was).
+
+```sh
+subtitler attach --out /work --url https://KATALOG_MANAGER --token-file /secrets/token [--dry-run]
+```
+
+`subtitler attach` attaches a run's copies through katalog-manager's seam
+(origin `recognized`): it asks the seam first, and a copy is not attached,
+with why, where the title now plays another version than the one it was
+read from, or has a subtitle of the copy's language and kind that covers it
+(a copy attached before, or a text subtitle of its own, from its package,
+its file or a provider; the kind told as the catalog's rows tell it).
+`<out>/<id>/attach.json` says what was attached; a copy attached before is
+not sent again.
 
 ### How well it reads
 
 Measured against the titles' own text tracks of the same subtitle: 45 PGS
-tracks of production titles that carry their language as a text track too,
+tracks of an instance's titles that carry their language as a text track too,
 the two labelled as one subtitle ("English PGS" and "English SRT", "Français
 SUP" and "Français SRT", the same label twice), picked at random per
 language, 39 in Latin scripts (one of them forced) and 6 Chinese
@@ -233,10 +282,14 @@ of those of 50-70, 14 % of 70-85, 10 % of 85-90, 3 % of 90 and more. Per
 track it is 92-96 in the Latin scripts and 86-88 in Chinese: the gate of
 80 passes every one measured.
 
-A Chinese track whose title names no script is read with both models on
-40 of its pictures and the surer reading tells it: right for all six
-(Traditional by 12-15 points of confidence, Simplified by 3-4; the
-Cantonese track, written in Traditional characters, Traditional).
+A Chinese track whose title names no script is read on 40 of its pictures
+with both models together (`chi_sim+chi_tra`: each character read by the
+model that reads it better), and the script of the characters read tells
+it (OpenCC: how many of them a conversion into the other script changes):
+right for 24 samples of 24, four of each of the six tracks (the Cantonese
+one, written in Traditional characters, Traditional). The two models'
+confidence alone, read one after the other, picked the wrong script for a
+sample in eight.
 
 VobSub: five of the library's VobSub tracks in the instance's languages
 (of four films; the library has 32 in all) decoded and read, with no text
@@ -260,38 +313,59 @@ seconds of wall time on three processes. The image grows by 38 MB
 
 ### The backlog
 
-Planned from the catalog (`deploy/ocr-titles.sql`, read-only; not run): a
-text copy is due for 3,378 image subtitles of 2,406 titles (2,174
-episodes, 232 films), 1,774 hours of runtime, 2,753 hours of tracks; among
-them 1,808 of the 1,828 titles whose only subtitles are images (the other
-20 have image subtitles in other languages alone, 11 of them tagged `und`)
-and the 12 whose forced English track is an image alone.
+Planned from the catalog (`deploy/ocr-titles.sql`, read-only; not run). It
+reads the catalog's rows as `subtitler ocr` reads package.json: a
+language by its primary subtag (`ger`, `deu` and `de` are German; a copy
+attached as `zh-Hans` is Chinese), Chinese of the script its tag or label
+names; the kind by the flags and the label (signs, forced, SDH, full); the
+image subtitles of the version a title plays; a text subtitle of the same
+language and kind covering one, the package's own, one attached from the
+title's file or a provider, or a copy a run before made (one a model made
+covers none). A text copy is due for 3,594 image subtitles of 2,409 titles
+(2,174 episodes, 235 films), 1,782 hours of runtime, 2,861 hours of tracks;
+among them 1,808 of the 1,828 titles whose only subtitles are images (the
+other 20 have none in a language of the instance that a version they play
+holds).
 
-| language | full | SDH | forced | of them VobSub |
-|---|---|---|---|---|
-| English | 1,082 | 1,186 | 169 | 3 |
-| German | 775 | 28 | 8 | 2 |
-| Chinese | 130 (22 Simplified, 46 Traditional, 62 read to tell) | | | 2 |
+| language | full | SDH | forced | signs | of them VobSub |
+|---|---|---|---|---|---|
+| English | 1,085 | 1,187 | 169 | 208 | 3 |
+| German | 777 | 28 | 8 | | 2 |
+| Chinese | 132 (23 Simplified, 47 Traditional, 62 read to tell) | | | | 2 |
 
 What it would take, from the sample's 722 pictures and 15.3 MB of PGS an
-hour of a track's runtime and the cost above: about 2 million pictures,
+hour of a track's runtime and the cost above: about 2.1 million pictures,
 about 10 CPU hours at the spike machine's speed (16.6 CPU seconds per 1,000
 pictures, Chinese 21); the cluster's cores are not measured: at half that
 speed 20 CPU hours, about 7 hours on three cores, one night within the
-hours it may read (22:00 to 17:00 UTC, 19 hours a day). 42 GB read from
-the store, each track once, at 20 MB/s at most, which is 35 minutes of
+hours it may read (22:00 to 17:00 UTC, 19 hours a day). 44 GB read from
+the store, each track once, at 20 MB/s at most, which is 36 minutes of
 reading spread over the run (under 2 MB/s on average); nothing written to
 it.
 
-The run, when the owner says go: `titles.json` from the query, newest
-first (ADR-0014: most-watched and newest first; the watch counts are the
-player's, to order the list by before the run), `subtitler ocr --dry-run`
-over it, then `deploy/ocr-job.yaml` (the image, CPU only, 3 cores; the
-media volume read-only, a work claim for the copies), which reads nothing
-from 17:00 to 22:00 UTC, each track once at 20 MB/s at most, and goes on
-where a run before stopped. The copies are attached through the catalog's
-seam (origin `recognized`) once it takes that origin; a later GPU run
-translates from them where a language lacks a subtitle.
+The run, when the owner says go. `titles.json` from the query, newest first
+(ADR-0014: most-watched and newest first; the watch counts are the
+player's, to order the list by before the run), read-only and quiet, so
+that the output is the JSON alone:
+
+```sh
+PGOPTIONS='-c default_transaction_read_only=on' \
+  psql -X -q -At -v ON_ERROR_STOP=1 -v langs="'en','de','zh'" -f deploy/ocr-titles.sql katalog > titles.json
+oc -n NAMESPACE create configmap subtitler-ocr-titles --from-file=titles.json
+```
+
+The backlog's list is some 640 kB, over the 256 KiB a client-side
+`oc apply` keeps in its annotation: the ConfigMap is made from the file
+(`create --from-file`, or `... --dry-run=client -o yaml | oc apply
+--server-side -f -` to replace one; a ConfigMap holds up to 1 MiB). Then
+`subtitler ocr --dry-run` over it, then `deploy/ocr-job.yaml` (the image,
+CPU only, 3 cores; the media volume read-only, a work claim for the
+copies), which reads nothing from 17:00 to 22:00 UTC, each track once at 20
+MB/s at most, and goes on where a run before stopped. The copies are
+attached by `subtitler attach` over the work claim (origin `recognized`,
+which katalog-manager takes from the release that lists it; `--dry-run`
+first), and a later GPU run translates from them where a language lacks a
+subtitle.
 
 ## The run
 
