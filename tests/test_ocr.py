@@ -3,6 +3,7 @@ end to end with Tesseract where it is installed (text drawn with Pillow's own fo
 
 from __future__ import annotations
 
+import hashlib
 import shutil
 
 import numpy as np
@@ -67,6 +68,12 @@ def test_models_and_labels():
     assert ocr.label("Deutsch (PGS)", Lang("de"), "full") == "Deutsch · OCR"
     assert ocr.label("forced PGS", en, "forced") == "English · forced · OCR"  # a name that is only its kind
     assert ocr.label("ENG", en, "full") == "English · OCR" and ocr.label("简体中字", Lang("zh", "Hans"), "full") == "简体中字 · OCR"
+    # A copy of signs and songs says so: it is attached as forced.
+    assert ocr.label("", en, "signs") == "English · Signs · OCR" == ocr.label("English", en, "signs")
+    assert ocr.label("Signs & Songs", en, "signs") == "Signs & Songs · OCR"
+    # The catalog keeps 120 characters of a label: a longer name is cut, the mark kept.
+    long = ocr.label("English, " + "the release group's notes on this track " * 5, en, "full")
+    assert len(long) == ocr.LABEL_WIDTH and long.endswith("… · OCR")
 
 
 def test_what_tesseract_confuses_is_put_right():
@@ -76,6 +83,13 @@ def test_what_tesseract_confuses_is_put_right():
     assert ocr.fix_latin("Ça va, toll!", "de") == "Ça va, toll!"
     assert ocr.fix_latin('Kom je morgen"?', "nl") == "Kom je morgen?" == ocr.fix_latin("Kom je morgen”?", "nl")
     assert ocr.fix_latin('Er sagte: "Nein"?', "de") == 'Er sagte: "Nein"?'  # a pair of quotes stays
+
+
+def test_a_hash_at_a_lines_edge_is_the_music_note_it_stands_for():
+    assert ocr.music_notes("# La la la #", "en") == "♪ La la la ♪" and ocr.music_notes("#", "de") == "♪"
+    assert ocr.music_notes("## Somewhere far ##", "en") == "♪♪ Somewhere far ♪♪"
+    assert ocr.music_notes("We're #1", "en") == "We're #1" and ocr.music_notes("Room # 4", "en") == "Room # 4"
+    assert ocr.music_notes("#我们走吧#", "zh") == "♪我们走吧♪"
 
 
 def test_an_ellipsis_at_a_lines_edge_is_told_by_its_pixels():
@@ -110,8 +124,8 @@ def test_tsv_words_become_lines():
         img[12:48, x0:x1] = 0
     zh = ocr.lines_of(pages[2], ocr.Part(img, 1.0, 40), "zh")
     assert [x.text for x in zh] == ["我们走吧 快"]  # a wide gap in the picture is a space, a narrow one none
-    both = [ocr.Line("Tom & <Jerry>", 90, 13, True, 12.0), ocr.Line("x", 90, 1, False, 0.0)]
-    assert ocr.cue_text(both) == "<i>Tom &amp; &lt;Jerry&gt;</i>\nx" and vtt.plain(ocr.cue_text(both)) == "Tom & <Jerry>\nx"
+    both = [ocr.Line("Salt & <pepper>", 90, 13, True, 12.0), ocr.Line("x", 90, 1, False, 0.0)]
+    assert ocr.cue_text(both) == "<i>Salt &amp; &lt;pepper&gt;</i>\nx" and vtt.plain(ocr.cue_text(both)) == "Salt & <pepper>\nx"
 
 
 class FakeEngine:
@@ -142,10 +156,79 @@ def test_cues_with_the_pictures_times_and_the_confidence_gate():
     assert [(c.start, c.end, c.text) for c in r.cues] == [(1.0, 4.0, "Hello"), (7.0, 11.0, "again.")]
     assert r.empty == 1 and r.pictures == 4 and r.accepted  # the same lines in a row are one cue
     assert r.confidence == pytest.approx((95 * 5 + 60 * 6) / 11)
-    low = ocr.recognize(pics, "en", engine=FakeEngine({0: [("Hm", 40.0)]}), min_confidence=80)
+    low = ocr.recognize(pics, "en", engine=FakeEngine({0: [("Hmmm", 40.0)]}), min_confidence=80)
     assert not low.accepted and "under 80" in low.rejected
     none = ocr.recognize(pics, "en", engine=FakeEngine({}))
     assert not none.accepted and none.cues == []
+
+
+def test_a_short_unsure_cue_is_left_out_and_a_track_of_them_is_not_attached():
+    pics = [picture(1.0 + 2 * k, 2.0 + 2 * k) for k in range(20)]
+    words = {k: [("Nobody knows yet.", 95.0)] for k in range(20)}
+    words[3] = [("DS", 44.0)]  # a mark read as letters, unsure
+    words[4] = [("Oh", 96.0)]  # a short word read surely stays
+    r = ocr.recognize(pics, "en", engine=FakeEngine(words), second_look=0)
+    assert r.accepted and r.dropped == 1 and len(r.cues) == 19 and "DS" not in [c.text for c in r.cues]
+    assert r.summary()["dropped"] == 1
+    # A third of the pictures graphics: read as nothing, or as marks. The gate of confidence alone
+    # would pass it (the words read are sure); their share does not.
+    for k in range(13, 20):
+        words[k] = [] if k % 2 else [("a", 30.0)]
+    r = ocr.recognize(pics, "en", engine=FakeEngine(words), second_look=0)
+    assert r.confidence > 90 and not r.accepted and "read as nothing, as a stray mark" in r.rejected
+    # A few of them in a long track: attached.
+    assert ocr.recognize(pics * 5, "en", engine=FakeEngine({k: [("Fine.", 95.0)] if k % 30 else []
+                                                            for k in range(100)}), second_look=0).accepted
+
+
+def test_a_copy_that_reads_as_another_language_is_not_attached():
+    def cues(lines):
+        return [vtt.Cue(2.0 * k, 2.0 * k + 1, line) for k, line in enumerate(lines)]
+
+    german = ["Ich weiß nicht, wo er ist.", "Das ist doch nicht dein Ernst!", "Wir haben noch Zeit, oder?",
+              "Er hat mir das nicht gesagt.", "Kannst du mir bitte helfen?"] * 4
+    english = ["I don't know where he is.", "You can't be serious!", "We still have time, don't we?",
+               "He didn't tell me that.", "Can you help me with this?"] * 4
+    assert "reads as German, not English" in ocr.wrong_language(cues(german), "en")
+    assert "reads as English, not German" in ocr.wrong_language(cues(english), "de")
+    assert ocr.wrong_language(cues(english), "en") is None and ocr.wrong_language(cues(german), "de") is None
+    assert ocr.wrong_language(cues(german[:3]), "en") is None  # too few words to tell
+    assert ocr.wrong_language(cues(english), "cs") is None  # a language it has no words of: not judged
+    chinese = ["我不知道他在哪里。", "你不是认真的吧！", "我们还有时间，对吧？", "他没有告诉我这件事。"] * 4
+    assert ocr.wrong_language(cues(chinese), "zh") is None
+    assert "another script" in ocr.wrong_language(cues(english), "zh")  # Latin read with a Chinese model
+    both = [f"{a}\n{b}" for a, b in zip(chinese, english)]
+    assert ocr.wrong_language(cues(both), "zh", bilingual=True) is None and ocr.wrong_language(cues(both), "zh")
+
+
+def test_the_cpus_are_the_containers_limit(tmp_path):
+    assert ocr.cpus(tmp_path) >= 1  # no cgroup files: the CPUs it may run on
+    (tmp_path / "cpu.max").write_text("400000 100000\n")
+    assert ocr.cpus(tmp_path) == min(4, ocr.cpus(tmp_path / "none"))
+    (tmp_path / "cpu.max").write_text("150000 100000\n")
+    assert ocr.cpus(tmp_path) == min(2, ocr.cpus(tmp_path / "none"))  # rounded up
+    (tmp_path / "cpu.max").write_text("max 100000\n")
+    assert ocr.cpus(tmp_path) == ocr.cpus(tmp_path / "none")
+    (tmp_path / "cpu.max").unlink()
+    (tmp_path / "cpu").mkdir()
+    (tmp_path / "cpu" / "cpu.cfs_quota_us").write_text("100000\n")
+    (tmp_path / "cpu" / "cpu.cfs_period_us").write_text("100000\n")
+    assert ocr.cpus(tmp_path) == 1
+
+
+def test_the_script_probe_reads_once_with_both_models_and_the_characters_decide():
+    pics = [picture(1.0 + 2 * k, 2.0 + 2 * k) for k in range(100)]
+    made = []
+
+    def factory(model):
+        made.append(model)
+        return FakeEngine({k: [("我們今天晚上去哪裡吃飯", 70.0)] for k in range(40)})
+
+    script, found = ocr.probe_script(pics, engine_factory=factory)
+    assert script == "Hant" and made == ["chi_sim+chi_tra"] and found["by_characters"] == "Hant"
+    assert found["pictures"] == 40
+    script, found = ocr.probe_script(pics, engine_factory=lambda m: FakeEngine({0: [("好", 90.0)]}))
+    assert script == "Hans" and found["by_characters"] is None  # too few characters to tell: Simplified
 
 
 needs_tesseract = pytest.mark.skipif(not shutil.which("tesseract") or text_mask("x") is None,
@@ -209,11 +292,18 @@ def test_a_model_tesseract_lacks_is_fetched_into_the_models_folder(tmp_path, mon
     with pytest.raises(LookupError, match="fra"):
         ocr.tessdata_for("fra", own)
     cache = tmp_path / "models" / "tessdata"
+    # A file that is not the model it should be is not used, nor left behind.
+    with pytest.raises(LookupError, match="chi_sim fetched .* is not the one expected"):
+        ocr.tessdata_for("chi_sim+eng", own, cache)
+    assert not list(cache.glob("chi_sim.*"))
+    monkeypatch.setitem(ocr.TESSDATA_SHA256, "chi_sim", hashlib.sha256(b"a model fetched").hexdigest())
     assert ocr.tessdata_for("chi_sim+eng", own, cache) == str(cache)
-    assert fetched == ["https://github.com/tesseract-ocr/tessdata_best/raw/4.1.0/chi_sim.traineddata"]
+    assert fetched == ["https://github.com/tesseract-ocr/tessdata_best/raw/4.1.0/chi_sim.traineddata"] * 2
     assert ocr.tessdata_url("deu") == "https://github.com/tesseract-ocr/tessdata_fast/raw/4.1.0/deu.traineddata"
     assert (cache / "eng.traineddata").read_bytes() == b"eng model"  # its own, copied beside the fetched one
     assert (cache / "chi_sim.traineddata").read_bytes() == b"a model fetched"
+    # Every model a language is read with has its checksum.
+    assert set(ocr.MODELS.values()) | set(ocr.CHINESE.values()) <= set(ocr.TESSDATA_SHA256)
 
 
 def test_an_unsure_part_is_read_again_in_grey_and_the_surer_reading_kept():
