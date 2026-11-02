@@ -130,8 +130,8 @@ def test_a_pgs_stream_of_an_original_comes_out_as_its_text_copy(tmp_path):
     out = tmp_path / "out"
     assert extract.main(["--titles", str(titles), "--out", str(out), "--languages", "en"]) == 0
     r = json.loads((out / "item-2" / "extracted.json").read_text())
-    (made,) = r["made"]
-    assert made["file"] == "en.forced-1.vtt" and made["attach"] == {
+    (made,) = r["recognized"]  # a text copy, listed apart from the text streams taken out
+    assert r["made"] == [] and made["file"] == "en.forced-1.vtt" and made["attach"] == {
         "language": "en", "label": "English (Forced) · OCR", "origin": "recognized", "sdh": False, "forced": True,
         "format": "webvtt"}
     cues = vtt.read(out / "item-2" / "en.forced-1.vtt")
@@ -139,3 +139,19 @@ def test_a_pgs_stream_of_an_original_comes_out_as_its_text_copy(tmp_path):
     assert cues[0].start == pytest.approx(1.0, abs=0.01) and cues[1].end == pytest.approx(5.5, abs=0.01)
     assert not list((out / "item-2").glob("*.sup"))  # the pictures taken out are gone again
     assert r["languages_without_a_track"] == ["en"]  # a forced copy is no subtitle of its language
+
+
+def test_image_streams_are_copied_out_in_a_read_of_their_own_whose_failure_costs_the_text_streams_nothing(tmp_path):
+    # An ffmpeg of the test's own: it writes the WebVTT files it is asked for and fails on the pictures.
+    fake = tmp_path / "ffmpeg"
+    fake.write_text("#!/bin/sh\ncase \"$*\" in *' sup '*) echo 'no pictures here' >&2; exit 1;; esac\n"
+                    "for a in \"$@\"; do case \"$a\" in *.part) printf 'WEBVTT\\n\\n' > \"$a\";; esac; done\n")
+    fake.chmod(0o755)
+    picks, _ = extract.choose(extract.subtitle_streams(IMAGES), parse_list("en,de"))
+    folder = tmp_path / "out"
+    folder.mkdir()
+    left = extract.extract("original.mkv", picks, folder, ffmpeg=str(fake))
+    assert (folder / "en-1.vtt.part").exists()  # the text stream, in its read
+    assert [x["stream"] for x in left] == [p.stream.index for p in picks if p.ocr] == [3, 4]
+    assert all("could not be copied out" in x["why"] and "no pictures here" in x["why"] for x in left)
+    assert not list(folder.glob("*.sup"))

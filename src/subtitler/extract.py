@@ -7,7 +7,7 @@ carries subtitles of its own, made by people. Before anything is made with a
 model, those are the subtitles a title has: this mode takes the original's
 subtitle streams in the instance's languages out of the file as WebVTT, one
 file a stream, and makes nothing. On the CPU, one read of the file for all
-of its streams (at most `--readrate` times real time), the file opened
+of its text streams (at most `--readrate` times real time), the file opened
 read-only.
 
 Which streams: every text stream (SubRip, ASS/SSA, WebVTT, MP4 text) in one of
@@ -19,17 +19,22 @@ written Cantonese is another language and never stands for zh-Hans.
 
 Then the image streams: a PGS stream in one of the languages, of a kind
 (full, SDH, forced) no text stream of its language is, gets a text copy
-(OCR, ocr.py), one a language and kind: it is copied out of the file in the
-same read (as .sup) and read by Tesseract. A copy that reads too unsurely is
-left out and said so; VobSub and DVB streams in an original are left out
-(their pictures are not copied out of the file here).
+(OCR, ocr.py), one a language and kind: its pictures are copied out of the
+file (as .sup) in a read of their own, after the text streams', so that a
+stream ffmpeg cannot copy out costs the text streams nothing, and read by
+Tesseract. A copy that cannot be made, or reads too unsurely, is left out
+and said so; VobSub and DVB streams in an original are left out (their
+pictures are not copied out of the file here). `--no-ocr` leaves every image
+stream out, as before.
 
 Out, per title, in <DIR>/<id>/: <tag>[.sdh][.forced]-<stream>.vtt (a NOTE says
 which stream it came from, and for a copy how it was read), and
-extracted.json: per file its language, SDH, forced, the stream's index,
-codec and title, cues, and what attaching it takes (origin "source": made
-by people, taken from the title's own file; "recognized" for a text copy of
-an image stream, label "<its title> · OCR"). Nothing is attached here.
+extracted.json: `made`, the text streams taken out, per file its language,
+SDH, forced, the stream's index, codec and title, cues, and what attaching
+it takes (origin "source": made by people, taken from the title's own file);
+`recognized`, the text copies of image streams, listed apart (origin
+"recognized", label "<its title> · OCR"); `left_out`, with why. Nothing is
+attached here.
 """
 
 from __future__ import annotations
@@ -180,18 +185,35 @@ def choose(streams: list[SubStream], langs: list[Lang], ocr: bool = True) -> tup
 
 
 def extract(path: str | Path, picks: list[Pick], folder: Path, readrate: float | None = None,
-            ffmpeg: str = "ffmpeg") -> None:
-    """All picked streams in one read of the file, each to its WebVTT file."""
-    cmd = [ffmpeg, "-nostdin", "-v", "error", "-y"]
-    if readrate:
-        cmd += ["-readrate", f"{readrate:g}"]
-    cmd += ["-i", str(path)]
-    for p in picks:
-        if p.ocr:  # the pictures as they are, for the OCR step
-            cmd += ["-map", f"0:{p.stream.index}", "-c:s", "copy", "-f", "sup", str(folder / p.taken)]
-        else:
+            ffmpeg: str = "ffmpeg") -> list[dict]:
+    """The picked text streams in one read of the file, each to its WebVTT file (a failure is the
+    title's, as it was); then the picked image streams' pictures (.sup, for the OCR step) in a read
+    of their own, whose failure leaves them out: the image streams left out, with why."""
+    head = [ffmpeg, "-nostdin", "-v", "error", "-y"] + (["-readrate", f"{readrate:g}"] if readrate else [])
+    head += ["-i", str(path)]
+    texts = [p for p in picks if not p.ocr]
+    if texts:
+        cmd = list(head)
+        for p in texts:
             cmd += ["-map", f"0:{p.stream.index}", "-c:s", "webvtt", "-f", "webvtt", str(folder / p.taken)]
-    subprocess.run(cmd, check=True)
+        subprocess.run(cmd, check=True)
+    images = [p for p in picks if p.ocr]
+    if not images:
+        return []
+    cmd = list(head)
+    for p in images:  # the pictures as they are
+        cmd += ["-map", f"0:{p.stream.index}", "-c:s", "copy", "-f", "sup", str(folder / p.taken)]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        why = f"ffmpeg exited {proc.returncode}: {proc.stderr.strip()[-300:]}" if proc.returncode else None
+    except OSError as e:
+        why = str(e)
+    if why is None:
+        return []
+    for p in images:
+        (folder / p.taken).unlink(missing_ok=True)
+    return [{"stream": p.stream.index, "why": f"an image subtitle whose pictures could not be copied out: {why}"}
+            for p in images]
 
 
 def recognize(p: Pick, folder: Path, tessdata: str | None = None, jobs: int = 0,
@@ -208,8 +230,8 @@ def recognize(p: Pick, folder: Path, tessdata: str | None = None, jobs: int = 0,
         want = p.lang if p.script_from else Lang(p.lang.code)
         lang, r = ocr.read_pictures(pictures, want, tessdata, jobs,
                                     ocr.MIN_CONFIDENCE if min_confidence is None else min_confidence, bilingual, models)
-    except (LookupError, ValueError, OSError, RuntimeError) as e:
-        return None, {"stream": p.stream.index, "why": f"no text copy: {e}"}
+    except Exception as e:  # noqa: BLE001 - a copy that cannot be made costs its title nothing else
+        return None, {"stream": p.stream.index, "why": f"no text copy: {str(e) or repr(e)}"}
     finally:
         sup.unlink(missing_ok=True)
     if lang.code == "zh" and lang.script != (p.lang.script or "Hans"):
@@ -232,15 +254,16 @@ def recognize(p: Pick, folder: Path, tessdata: str | None = None, jobs: int = 0,
 
 
 def finish(picks: list[Pick], folder: Path, title_id: str, tessdata: str | None = None, jobs: int = 0,
-           min_confidence: float | None = None, models: str | None = None) -> tuple[list[dict], list[dict]]:
+           min_confidence: float | None = None,
+           models: str | None = None) -> tuple[list[dict], list[dict], list[dict]]:
     """Each extracted file checked (cues, Chinese script by its characters), given its NOTE, and listed;
-    each image stream taken out read into its text copy."""
-    made, left = [], []
+    each image stream taken out read into its text copy: (the files, the copies, the streams left out)."""
+    made, recognized, left = [], [], []
     for p in picks:
         if p.ocr:
             entry, why = recognize(p, folder, tessdata, jobs, min_confidence, models)
             if entry:
-                made.append(entry)
+                recognized.append(entry)
             else:
                 left.append(why)
             continue
@@ -280,7 +303,7 @@ def finish(picks: list[Pick], folder: Path, title_id: str, tessdata: str | None 
                      "first": vtt.timestamp(cues[0].start), "last": vtt.timestamp(cues[-1].end),
                      "attach": {"language": p.lang.tag, "origin": "source", "sdh": p.stream.sdh,
                                 "forced": p.stream.forced, "format": "webvtt"}})
-    return made, left
+    return made, recognized, left
 
 
 def bundle(item: str, folder: Path) -> None:
@@ -326,12 +349,17 @@ def main(argv: list[str] | None = None) -> int:
                 (", ".join(f"{p.stream.index} {p.lang.tag}{' sdh' if p.stream.sdh else ''}{' forced' if p.stream.forced else ''}"
                            f"{' (OCR)' if p.ocr else ''}" for p in picks) or "none"))
             if picks:
-                extract(t["original"], picks, folder, a.readrate)
-            made, more = finish(picks, folder, t["id"], a.tessdata, a.ocr_jobs, a.min_confidence, a.models)
+                failed = extract(t["original"], picks, folder, a.readrate)
+                left += failed
+                picks = [p for p in picks if p.stream.index not in {x["stream"] for x in failed}]
+            made, recognized, more = finish(picks, folder, t["id"], a.tessdata, a.ocr_jobs, a.min_confidence,
+                                            a.models)
             left += more
-            missing = [l.tag for l in langs if not any(m["language"] == l.tag and not m["forced"] for m in made)]
+            # A language a text file or a text copy (not forced) is there for has a track.
+            missing = [l.tag for l in langs if not any(m["language"] == l.tag and not m["forced"]
+                                                       for m in made + recognized)]
             r = {"id": t["id"], "name": name, "made_by": f"subtitler {__version__}", "streams": len(streams),
-                 "made": made, "left_out": left, "languages_without_a_track": missing,
+                 "made": made, "recognized": recognized, "left_out": left, "languages_without_a_track": missing,
                  "seconds": round(time.perf_counter() - t0, 1)}
         except Exception as e:  # noqa: BLE001 - one title's failure is not the run's
             r = {"id": t["id"], "name": name, "error": repr(e)}
@@ -341,6 +369,9 @@ def main(argv: list[str] | None = None) -> int:
         say(f"{name}: " + (f"failed: {r['error']}" if "error" in r else
                            f"{len(r['made'])} files in {r['seconds']:.0f} s: " +
                            ", ".join(f"{m['file']} ({m['cues']} cues)" for m in r["made"]) +
+                           (f"; {len(r['recognized'])} text copies (OCR): " +
+                            ", ".join(f"{m['file']} ({m['cues']} cues)" for m in r["recognized"])
+                            if r["recognized"] else "") +
                            (f"; no track for {', '.join(r['languages_without_a_track'])}" if r["languages_without_a_track"] else "")))
         if a.bundle:
             bundle(t["id"], folder)
