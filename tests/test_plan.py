@@ -282,3 +282,17 @@ def test_only_the_image_tracks_of_the_languages_are_read_to_count_them(make_pack
     pkg = load(root, {"en", "de", "zh"}, reader)
     assert read == ["0.sup"] and [s.cues for s in pkg.subtitles] == [12, None]
     assert [s.cues for s in load(root, count=False).subtitles] == [None, None]
+
+
+def test_signs_are_not_copied_where_the_language_has_a_forced_subtitle(make_package):
+    # A forced text track of the language, or a forced image track of it (copied), covers its signs track.
+    root = make_package(subs=[{"language": "eng", "format": "pgs", "cues": 400},
+                              {"language": "eng", "format": "pgs", "cues": 6},
+                              {"language": "eng", "forced": True, "purpose": "forced", "cues": 5}],
+                        duration_ms=6_000_000)
+    assert [(c.sub.id, c.kind) for c in copies(load(root), LANGS)] == [("sub0", "full")]
+    root = make_package(subs=[{"language": "ger", "format": "pgs", "cues": 400},
+                              {"language": "ger", "format": "pgs", "cues": 6},
+                              {"language": "ger", "format": "pgs", "forced": True, "purpose": "forced", "cues": 4}],
+                        duration_ms=6_000_000)
+    assert [(c.sub.id, c.kind) for c in copies(load(root), LANGS)] == [("sub0", "full"), ("sub2", "forced")]

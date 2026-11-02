@@ -848,6 +848,9 @@ def recognize(pictures: list, lang: Lang | str, model: str | None = None, tessda
     r = Recognized(cues, model, f"Tesseract {engine.version()}", confidence, len(pictures), empty,
                    sum(c.meta["conf"] < DOUBTFUL for c in cues), sum(c.meta["italic"] for c in cues),
                    time.perf_counter() - t0, engine.cpu_seconds, shown, dropped=dropped)
+    too_large = sum(getattr(p, "skipped", 0) for p in pictures)
+    if too_large:  # objects larger than their video, left out undecoded: their pictures read as nothing
+        r.meta["too_large"] = too_large
     garbage = empty + dropped + r.doubtful
     if not cues:
         r.rejected = "nothing was read in its pictures"
@@ -883,7 +886,7 @@ def probe_script(pictures: list, tessdata: str | Path | None = None, jobs: int =
                  engine_factory=None) -> tuple[str | None, dict]:
     """Which script a Chinese image subtitle is in: a sample of its pictures read once with both models
     together (PROBE), the script of the characters read deciding (script.detect_script) where they lean
-    PROBE_SURE or more one way; None where they tell neither (too few characters, no lean). Its title
+    PROBE_SURE or more one way; None where they tell neither (under 20 characters, no lean). Its title
     is not asked: a track labelled with the wrong script reads almost as surely with that script's
     model, and into its characters (a Simplified one read with chi_tra at 84-86). The two models'
     confidence alone, read one after the other, picked the wrong script for a sample in eight."""
@@ -907,6 +910,18 @@ _NO_NAME = re.compile(r"[\[(]?\s*(?:forced|sdh|cc|hi|full|subs?|subtitles?|[a-z]
 
 _SIGNS = re.compile(r"\bsigns?\b", re.I)
 MARK = " · OCR"
+_UNSAID = re.compile(r"[\ufffd\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def clean_title(title: str | None) -> str:
+    """A track's title as a label or a NOTE may carry it: no U+FFFD (the catalog refuses a subtitle
+    that holds one) or control characters, on one line, no WebVTT arrow."""
+    return re.sub(r"\s+", " ", _UNSAID.sub("", title or "")).replace("-->", "->").strip()
+
+
+def _fit(name: str, tail: str) -> str:
+    room = LABEL_WIDTH - len(tail)
+    return name if len(name) <= room else name[:room - 1].rstrip() + "…"
 
 
 def label(title: str, lang: Lang, kind: str) -> str:
@@ -915,16 +930,15 @@ def label(title: str, lang: Lang, kind: str) -> str:
     "English · OCR". Words of the image format ("PGS") are left out: the copy is text. A copy of a
     track of signs and songs says Signs ("English · Signs · OCR"): it is attached as forced, and a
     viewer and the catalog tell it from a forced track by its label. A name too long for the
-    catalog (LABEL_WIDTH) is cut, and the mark kept."""
-    name = _FORMAT_WORDS.sub(" ", title or "").strip(" -–/·|,")
+    catalog (LABEL_WIDTH) is cut, and the Signs and OCR marks kept."""
+    name = _FORMAT_WORDS.sub(" ", clean_title(title)).strip(" -–/·|,")
     name = re.sub(r"\s{2,}", " ", name)
     if not name or _NO_NAME.fullmatch(name):
-        name = lang.name + {"sdh": " · SDH", "forced": " · forced", "signs": " · Signs"}.get(kind, "")
-    elif kind == "signs" and not _SIGNS.search(name):
-        name += " · Signs"
-    if len(name) + len(MARK) > LABEL_WIDTH:
-        name = name[:LABEL_WIDTH - len(MARK) - 1].rstrip() + "…"
-    return name + MARK
+        name = lang.name + {"sdh": " · SDH", "forced": " · forced"}.get(kind, "")
+    tail = MARK
+    if kind == "signs" and not _SIGNS.search(_fit(name, tail)):  # the name, as it fits, says no Signs
+        tail = " · Signs" + MARK
+    return _fit(name, tail) + tail
 
 
 def read_pictures(pictures: list, lang: Lang, tessdata: str | Path | None = None, jobs: int = 0,
@@ -933,31 +947,35 @@ def read_pictures(pictures: list, lang: Lang, tessdata: str | Path | None = None
     """An image subtitle's pictures read into its text copy: the language it is in and what was read.
     A Chinese one's script is the one its characters are in (probe_script), whether its title names
     one or not: where the title names one, the characters confirm it, or, where they clearly lean the
-    other way, the copy is read in theirs; where they tell neither, a track whose title names a script
-    is not read further and not attached (the copy rejected, why said), one whose title names none is
-    read as Simplified. A bilingual track (Chinese above, English below) is read with English's model
-    too. A model Tesseract lacks is fetched into `models`/tessdata where that is given (tessdata_for)."""
+    other way, the copy is read in theirs. Where they tell neither (a short track: under 20 of them in
+    its sample), a track whose title names a script is read in it; one whose title names none is not
+    read further and not attached (the copy rejected, why said): Simplified by default read a short
+    Traditional track at 83. A bilingual track (Chinese above, English below) is read with English's
+    model too. A model Tesseract lacks is fetched into `models`/tessdata where that is given
+    (tessdata_for)."""
     meta = {}
     cache = Path(models) / "tessdata" if models else None
     if lang.code == "zh":
         found, probe = probe_script(pictures, tessdata_for(PROBE, tessdata, cache), jobs)
         meta["script_probe"] = probe
         titled = lang.script
-        if titled is None:
-            lang = Lang("zh", found or "Hans")
-            meta["script_from"] = "characters" if found else "none told: Simplified"
-        elif found == titled:
-            meta["script_from"] = "title, characters agree"
-        elif found is not None:
-            lang = Lang("zh", found)
-            meta["script_from"] = f"characters, not its title ({titled})"
-        else:
-            meta["script_from"] = "title, characters tell no script"
-            why = (f"its title names {Lang('zh', titled).name}, and {probe['pictures']} of its pictures read with "
-                   f"both Chinese models tell no script clearly (their characters: "
-                   f"{probe['by_characters'] or 'too few, or no lean'}, {probe['share']:.3f} under {PROBE_SURE:g})")
+        if found is None and titled is None:
+            meta["script_from"] = "none: no title names it, its characters tell none"
+            why = (f"its title names no script, and {probe['pictures']} of its pictures read with both Chinese "
+                   f"models tell none clearly (their characters: {probe['by_characters'] or 'too few, or no lean'}"
+                   f", {probe['share']:.3f}; {PROBE_SURE:g} tells)")
             return lang, Recognized([], PROBE, probe["engine"], 0.0, len(pictures), 0, 0, 0, probe["seconds"],
                                     probe["cpu_seconds"], 0.0, rejected=why, meta=meta)
+        if found is None:
+            meta["script_from"] = "title, its characters telling none"
+        elif titled is None:
+            lang = Lang("zh", found)
+            meta["script_from"] = "characters"
+        elif found == titled:
+            meta["script_from"] = "title, characters agree"
+        else:
+            lang = Lang("zh", found)
+            meta["script_from"] = f"characters, not its title ({titled})"
     model = model_for(lang)
     if model is None:
         raise LookupError(f"no OCR model for the language {lang.tag}")

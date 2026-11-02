@@ -74,6 +74,14 @@ def test_models_and_labels():
     # The catalog keeps 120 characters of a label: a longer name is cut, the mark kept.
     long = ocr.label("English, " + "the release group's notes on this track " * 5, en, "full")
     assert len(long) == ocr.LABEL_WIDTH and long.endswith("… · OCR")
+    signs = ocr.label("English, " + "the release group's notes on this track " * 5, en, "signs")
+    assert len(signs) == ocr.LABEL_WIDTH and signs.endswith("… · Signs · OCR")  # cut, its marks kept
+    late = ocr.label("English, " + "notes " * 30 + "Signs & Songs", en, "signs")
+    assert late.endswith("… · Signs · OCR")  # the Signs of its name cut off: said again
+    # A title's U+FFFD (the catalog refuses a subtitle that holds one), control characters, line breaks and
+    # WebVTT arrows do not come along.
+    assert ocr.clean_title("Eng\ufffdlish\x07 -->\nSDH") == "English -> SDH"
+    assert ocr.label("Eng\ufffdlish", en, "full") == "English · OCR"
 
 
 def test_what_tesseract_confuses_is_put_right():
@@ -181,6 +189,15 @@ def test_a_short_unsure_cue_is_left_out_and_a_track_of_them_is_not_attached():
                                                             for k in range(100)}), second_look=0).accepted
 
 
+def test_a_picture_of_an_object_too_large_to_be_one_counts_as_read_as_nothing():
+    pics = [picture(1.0 + 2 * k, 2.0 + 2 * k) for k in range(20)]
+    for p in pics[:4]:
+        p.objects, p.skipped = [], 1
+    r = ocr.recognize(pics, "en", engine=FakeEngine({k: [("Nobody knows yet.", 95.0)] for k in range(16)}),
+                      second_look=0)
+    assert r.empty == 4 and r.meta["too_large"] == 4 and not r.accepted and "4 of its 20 pictures" in r.rejected
+
+
 def test_a_copy_that_reads_as_another_language_is_not_attached():
     def cues(lines):
         return [vtt.Cue(2.0 * k, 2.0 * k + 1, line) for k, line in enumerate(lines)]
@@ -256,15 +273,20 @@ def test_a_chinese_tracks_script_is_its_characters_whatever_its_title_says(monke
     lang, r = ocr.read_pictures(pics, Lang("zh", "Hant"))
     assert lang.tag == "zh-Hans" and read[-1] == "chi_sim" and r.accepted
     assert r.meta["script_from"] == "characters, not its title (Hant)" and r.meta["script_probe"]["share"] == 0.15
-    # The characters tell no script: a track whose title names one is not read further, nor attached.
+    # The characters tell no script (a short track): one whose title names a script is read in it ...
     monkeypatch.setattr(ocr, "probe_script", probe(None, by="Hans", share=0.004))
     lang, r = ocr.read_pictures(pics, Lang("zh", "Hant"))
-    assert lang.tag == "zh-Hant" and len(read) == 2 and not r.accepted and r.cues == []
-    assert "its title names Chinese (Traditional)" in r.rejected and "tell no script clearly" in r.rejected
-    assert r.cpu_seconds == 2.0 and r.summary()["script_probe"]["by_characters"] == "Hans"
-    # One whose title names none is read as Simplified then, as before.
+    assert lang.tag == "zh-Hant" and read[-1] == "chi_tra" and r.accepted
+    assert r.meta["script_from"] == "title, its characters telling none"
+    # ... one whose title names none is not read further, nor attached (Simplified by default misread one).
     lang, r = ocr.read_pictures(pics, Lang("zh"))
-    assert lang.tag == "zh-Hans" and read[-1] == "chi_sim" and r.accepted
+    assert lang.tag == "zh" and len(read) == 3 and not r.accepted and r.cues == []
+    assert "its title names no script" in r.rejected and "tell none clearly" in r.rejected
+    assert r.cpu_seconds == 2.0 and r.summary()["script_probe"]["by_characters"] == "Hans"
+    # The characters tell it: one whose title names none is read in theirs.
+    monkeypatch.setattr(ocr, "probe_script", probe("Hant"))
+    lang, r = ocr.read_pictures(pics, Lang("zh"))
+    assert lang.tag == "zh-Hant" and read[-1] == "chi_tra" and r.meta["script_from"] == "characters"
 
 
 needs_tesseract = pytest.mark.skipif(not shutil.which("tesseract") or text_mask("x") is None,

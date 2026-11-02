@@ -175,3 +175,36 @@ def test_titles_that_are_no_list_of_titles_are_refused_with_why(tmp_path, capsys
     assert recognize.main(["--titles", str(t), "--out", str(tmp_path / "out")]) == 2
     assert "no plain folder name" in capsys.readouterr().out
     assert not (tmp_path / "out").exists()
+
+
+def test_a_stop_at_any_point_of_a_title_leaves_no_mark_and_a_stale_one_is_no_kill(make_package, tmp_path,
+                                                                                  monkeypatch):
+    import signal
+
+    root = make_package(subs=[{"language": "eng", "format": "pgs"}])
+    out = tmp_path / "out"
+    real = recognize.write_json
+
+    def write(path, data):  # a SIGTERM right after the mark is written, before anything else happens
+        real(path, data)
+        if path.name == "started":
+            signal.raise_signal(signal.SIGTERM)
+
+    monkeypatch.setattr(recognize, "write_json", write)
+    with pytest.raises(SystemExit):
+        recognize.main(["--titles", titles(tmp_path, root), "--out", str(out), *RUN])
+    assert not (out / "item-9" / "started").exists()
+    monkeypatch.setattr(recognize, "write_json", real)
+    # A Ctrl-C while the title is read: the same.
+    monkeypatch.setattr(ocr, "read_pictures", lambda *a, **k: signal.raise_signal(signal.SIGINT))
+    with pytest.raises(SystemExit):
+        recognize.main(["--titles", titles(tmp_path, root), "--out", str(out), *RUN])
+    assert not (out / "item-9" / "started").exists()
+    # A mark left beside a title's result (a stop after it was written) is stale: the result stands.
+    monkeypatch.setattr(ocr, "read_pictures", fake_read())
+    assert recognize.main(["--titles", titles(tmp_path, root), "--out", str(out), *RUN]) == 0
+    (out / "item-9" / "started").write_text("{}")
+    monkeypatch.setattr(ocr, "read_pictures", lambda *a, **k: pytest.fail("read again"))
+    assert recognize.main(["--titles", titles(tmp_path, root), "--out", str(out), *RUN]) == 0
+    r = json.loads((out / "item-9" / "ocr.json").read_text())
+    assert "error" not in r and r["made"] and not (out / "item-9" / "started").exists()

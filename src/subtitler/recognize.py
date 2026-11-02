@@ -29,7 +29,7 @@ short by its deadline goes on where it stopped. A title being read is marked
 (<DIR>/<id>/started): a run killed in it without warning (out of memory)
 leaves the mark, and the next run records the title as failed and leaves it
 out (`--again` reads it); a run stopped by a signal (SIGTERM: its deadline)
-takes the mark away first, and the next one reads the title. `--dry-run`
+takes the mark away first (a Ctrl-C too), and the next one reads the title. `--dry-run`
 reads package.json alone and says what would be read, how much, and in which
 language.
 """
@@ -79,7 +79,8 @@ def entry(c: Copy, lang: Lang, r: ocr.Recognized, version: str = __version__) ->
     and the script it is in, not by that title."""
     wrong = bool(c.lang.script and lang.script and c.lang.script != lang.script)
     lbl = ocr.label("" if wrong else c.sub.title, lang, c.kind)
-    what = f"{c.sub.id} ({c.sub.format}" + (f", '{c.sub.title}'" if c.sub.title else "") + ")"
+    title = ocr.clean_title(c.sub.title)  # no U+FFFD into the file: the catalog refuses it
+    what = f"{c.sub.id} ({c.sub.format}" + (f", '{title}'" if title else "") + ")"
     note = (f"{lbl}. Made by subtitler {version}: the text of the title's own image subtitle {what}, "
             f"recognized (OCR) by {r.engine} with its {r.model} model; mean confidence {r.confidence:.1f}."
             + (f" Its title names {Lang('zh', c.lang.script).name}; its characters are "
@@ -318,11 +319,12 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     say(f"subtitler {__version__} ocr: {len(titles)} titles, languages {', '.join(x.tag for x in langs)}, "
         f"hours {a.hours} UTC" + (", dry run" if a.dry_run else ""))
-    before_term = signal.signal(signal.SIGTERM, _stopped)
+    before = {s: signal.signal(s, _stopped) for s in (signal.SIGTERM, signal.SIGINT)}  # a deadline, a Ctrl-C
     try:
         return _run(titles, langs, hours, a)
     finally:
-        signal.signal(signal.SIGTERM, before_term)
+        for s, handler in before.items():
+            signal.signal(s, handler)
         _Reading.mark = None
 
 
@@ -333,6 +335,12 @@ def _run(titles: list[dict], langs: list[Lang], hours: tuple[int, int], a) -> in
         done, mark = folder / "ocr.json", folder / "started"
         name = t.get("name") or t["id"]
         if not a.dry_run and not a.again:
+            before = read_json(done)  # a title done, or one that killed a run, is not read again
+            if isinstance(before, dict) and not before.get("dry_run") and (
+                    "error" not in before or before.get("stopped")):
+                mark.unlink(missing_ok=True)  # one left after its title's result was written
+                results.append(before)
+                continue
             if mark.exists():  # the run before was killed in it: once is enough
                 r = {"id": t["id"], "name": name, "made_by": f"subtitler {__version__}", "error": KILLED,
                      "stopped": True}
@@ -342,20 +350,15 @@ def _run(titles: list[dict], langs: list[Lang], hours: tuple[int, int], a) -> in
                 rc = 1
                 say(f"{name}: {KILLED}")
                 continue
-            before = read_json(done)  # a title done, or one that killed a run, is not read again
-            if isinstance(before, dict) and not before.get("dry_run") and (
-                    "error" not in before or before.get("stopped")):
-                results.append(before)
-                continue
         wait = 0.0 if a.dry_run else until_open(hours, datetime.now(timezone.utc))
         if wait:
             say(f"outside the hours {a.hours} UTC: waiting {wait / 3600:.1f} h")
             time.sleep(wait)
         folder.mkdir(parents=True, exist_ok=True)
         if not a.dry_run:
+            _Reading.mark = mark  # before it is written: a stop in between leaves none
             write_json(mark, {"id": t["id"], "made_by": f"subtitler {__version__}",
                               "started": datetime.now(timezone.utc).isoformat(timespec="seconds")})
-            _Reading.mark = mark
         t0 = time.perf_counter()
         try:
             r = run_title(t, langs, a, folder)

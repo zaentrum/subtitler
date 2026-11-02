@@ -128,7 +128,9 @@ def copies(pkg: Package, languages: list[Lang]) -> list[Copy]:
     """The image subtitles to make a text copy of (OCR): each in one of the languages (Chinese of
     either script, not Cantonese), not commentary, of a kind the title has no text subtitle of in
     that language (and script); of several of a language and kind the fullest. A forced one is
-    copied where a full text subtitle is there, as it is a kind of its own."""
+    copied where a full text subtitle is there, as it is a kind of its own. A track of signs and
+    songs is not, where the language has a forced text subtitle or a forced copy: both are forced,
+    and a language is to have one."""
     codes = {l.code for l in languages}
     have = {(s.language, s.script if s.language == "zh" else None, kind(s)) for s in pkg.subtitles
             if s.exists and s.is_text and s.purpose != "commentary"}
@@ -137,16 +139,17 @@ def copies(pkg: Package, languages: list[Lang]) -> list[Copy]:
         if s.purpose == "commentary" or s.language not in codes or s.cues == 0:
             continue
         k = kind(s)
+        kinds = {k, "forced"} if k == "signs" else {k}  # a forced subtitle covers signs: both are forced
         script = s.script if s.language == "zh" else None
         if s.language == "zh":
-            covered = any(code == "zh" and kk == k and (script is None or sc in (script, None))
+            covered = any(code == "zh" and kk in kinds and (script is None or sc in (script, None))
                           for code, sc, kk in have)
         else:
-            covered = (s.language, None, k) in have
+            covered = any((s.language, None, kk) in have for kk in kinds)
         if covered or (s.language, script, k) in out:
             continue
         out[(s.language, script, k)] = Copy(s, Lang(s.language, script), k)
-    return list(out.values())
+    return [c for key, c in out.items() if not (c.kind == "signs" and (key[0], key[1], "forced") in out)]
 
 
 # Under source_order="english" a complete English track goes first: the spike

@@ -53,10 +53,16 @@ def test_a_unit_without_a_stop_ends_at_the_next_one():
     assert pics[0].end == pytest.approx(4.0) and pics[1].end == pytest.approx(5.0, abs=0.012)
 
 
-def test_a_subpicture_larger_than_its_video_is_refused():
+def test_a_subpicture_larger_than_its_video_is_left_out_and_an_idx_of_no_size_bounds_none():
     a = bitmap(10, 50, 3)
-    idx, sub = vobsub([(1.0, spu(a, 0, 0, 0.0, 1.0))], size=(40, 480))
-    with pytest.raises(ValueError, match="an object of 50x10 pixels, larger than its video"):
-        vs.pictures(idx, sub)
-    idx, sub = vobsub([(1.0, spu(a, 0, 0, 0.0, 1.0))], size=(50, 480))
+    units = [(1.0, spu(a, 0, 0, 0.0, 1.0)), (3.0, spu(a, 0, 0, 0.0, 1.0))]
+    idx, sub = vobsub(units, size=(40, 480))  # wider than its video: no pixels decoded, a picture of nothing
+    assert [(p.start, len(p.objects), p.skipped) for p in vs.pictures(idx, sub)] == [(1.0, 0, 1), (3.0, 0, 1)]
+    idx, sub = vobsub(units, size=(50, 480))
     assert vs.pictures(idx, sub)[0].objects[0].width == 50
+    # An .idx that names no size: no video to bound the area by (an HD track's areas are wider than a DVD's).
+    big = bitmap(10, 1069, 4)
+    idx, sub = vobsub([(1.0, spu(big, 0, 0, 0.0, 1.0))])
+    idx = "\n".join(line for line in idx.splitlines() if not line.startswith("size:")) + "\n"
+    pics = vs.pictures(idx, sub)
+    assert vs.read_idx(idx)["size"] is None and pics[0].objects[0].width == 1069 and pics[0].size == (720, 576)

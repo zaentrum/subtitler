@@ -234,13 +234,14 @@ def recognize(p: Pick, folder: Path, tessdata: str | None = None, jobs: int = 0,
         return None, {"stream": p.stream.index, "why": f"no text copy: {str(e) or repr(e)}"}
     finally:
         sup.unlink(missing_ok=True)
-    if lang.code == "zh" and lang.script != (p.lang.script or "Hans"):
-        return None, {"stream": p.stream.index, "why": f"Chinese in the other script ({lang.script}, by reading it)"}
     if not r.accepted:
         return None, {"stream": p.stream.index, "why": f"its text copy is left out: {r.rejected}", "ocr": r.summary()}
+    if lang.code == "zh" and lang.script != (p.lang.script or "Hans"):
+        return None, {"stream": p.stream.index, "why": f"Chinese in the other script ({lang.script}, by reading it)"}
     kind = p.stream.kind
     lbl = ocr.label(p.stream.title, p.lang, kind)
-    what = f"stream {p.stream.index} ({p.stream.codec}" + (f", '{p.stream.title}'" if p.stream.title else "") + ")"
+    title = ocr.clean_title(p.stream.title)
+    what = f"stream {p.stream.index} ({p.stream.codec}" + (f", '{title}'" if title else "") + ")"
     vtt.write(folder / p.name, r.cues, notes=[f"{lbl}. Made by subtitler {__version__}: the text of the title's own "
                                               f"image subtitle, {what} of its original file, recognized (OCR) by "
                                               f"{r.engine} with its {r.model} model; mean confidence "
@@ -292,7 +293,10 @@ def finish(picks: list[Pick], folder: Path, title_id: str, tessdata: str | None 
                 p.script_from = "text" if found else ""
         kind = " · ".join(k for k, on in (("SDH", p.stream.sdh), ("forced", p.stream.forced)) if on)
         label = f"{p.lang.name}" + (f" · {kind}" if kind else "")
-        what = f"stream {p.stream.index} ({p.stream.codec}" + (f", '{p.stream.title}'" if p.stream.title else "") + ")"
+        from .ocr import clean_title
+
+        title = clean_title(p.stream.title)
+        what = f"stream {p.stream.index} ({p.stream.codec}" + (f", '{title}'" if title else "") + ")"
         out = folder / p.name
         vtt.write(out, cues, notes=[f"{label}. Extracted by subtitler {__version__} from the title's original file, "
                                     f"its subtitle {what}: the source's own, made by people."])

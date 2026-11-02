@@ -22,8 +22,10 @@ show the same thing again (acquisition points, a palette-only update of a
 fade) are one picture; a set whose pixels are all transparent shows nothing.
 
 An object is at most as large as the video it is shown on (and PGS allows no
-side over 4096): a stream whose object claims more is refused (PgsError)
-before its pixels are decoded, as a few bytes can claim gigabytes.
+side over 4096): one that claims more is left out before its pixels are
+decoded, as a few bytes can claim gigabytes; a picture of nothing else is
+kept as one with no objects (`skipped`), which the OCR step counts as read as
+nothing.
 
 Pure Python and numpy; nothing is written.
 """
@@ -145,6 +147,7 @@ class Picture:
     forced: bool = False  # every object flagged forced
     sets: int = 1  # display sets it spans (acquisition points, palette updates)
     key: tuple = field(default=(), repr=False)
+    skipped: int = 0  # objects it shows that are larger than its video (too_large), left out undecoded
 
     @property
     def duration(self) -> float:
@@ -186,6 +189,7 @@ def display_sets(data: bytes) -> Iterator[dict]:
     palette indices, their palette, their position)."""
     palettes: dict[int, np.ndarray] = {}
     objects: dict[int, _Object] = {}
+    refused: dict[int, tuple] = {}  # objects too large to be one: their id -> (version, width, height)
     decoded: dict[tuple, np.ndarray] = {}
     cur: dict | None = None
     video = (0, 0)
@@ -199,6 +203,7 @@ def display_sets(data: bytes) -> Iterator[dict]:
             if state & EPOCH_START:
                 palettes.clear()
                 objects.clear()
+                refused.clear()
                 decoded.clear()
             comps, k = [], 11
             for _ in range(count):
@@ -222,15 +227,19 @@ def display_sets(data: bytes) -> Iterator[dict]:
                 if len(d) < 11:
                     raise PgsError("an object segment too short")
                 w, h = struct.unpack_from(">HH", d, 7)
-                why = too_large(w, h, video)
-                if why:
-                    raise PgsError(why)
+                if too_large(w, h, video):  # left out undecoded, its fragments too
+                    objects.pop(oid, None)
+                    refused[oid] = (version, w, h)
+                    continue
+                refused.pop(oid, None)
                 objects[oid] = _Object(version, w, h, bytearray(d[11:]), bool(seq & 0x40))
             elif oid in objects:
                 objects[oid].data += d[4:]
                 objects[oid].complete = bool(seq & 0x40)
         elif seg.kind == END and cur is not None:
             screen = []
+            cur["skipped"] = [("too large", c["object"], *refused[c["object"]]) for c in cur["compositions"]
+                              if c["object"] in refused]
             pal = palettes.get(cur["palette"])
             for c in cur["compositions"]:
                 ob = objects.get(c["object"])
@@ -257,7 +266,8 @@ def pictures(data: bytes, min_alpha: int = 16) -> list[Picture]:
     """What the track shows, in order: one Picture from the display set that shows it to the one that
     clears or replaces it. Sets that show the same objects at the same places again are one picture
     (acquisition points; a palette update with anything still visible); a set whose pixels are all
-    (nearly) transparent shows nothing."""
+    (nearly) transparent shows nothing. An object too large to be one is left out (`skipped`); a set
+    that shows nothing else is a picture of no objects."""
     out: list[Picture] = []
     open_: Picture | None = None
     opacity = 0
@@ -269,11 +279,12 @@ def pictures(data: bytes, min_alpha: int = 16) -> list[Picture]:
                 continue
             shown.append(Placed(x, y, _full_range(pal[:, 0][idx]), alpha, c["forced"]))
             key.append((okey, x, y, c["crop"]))
-        key = tuple(key)
-        if open_ is not None and shown and key == open_.key:
+        skipped = s.get("skipped", [])
+        key = tuple(key) + tuple(skipped)
+        if open_ is not None and (shown or skipped) and key == open_.key:
             open_.sets += 1
             # A fade: the picture as it is most opaque is the one to read.
-            most = max(int(p.alpha.max()) for p in shown)
+            most = max((int(p.alpha.max()) for p in shown), default=0)
             if most > opacity:
                 open_.objects, opacity = shown, most
             continue
@@ -281,9 +292,10 @@ def pictures(data: bytes, min_alpha: int = 16) -> list[Picture]:
             open_.end = s["pts"]
             out.append(open_)
             open_ = None
-        if shown:
-            open_ = Picture(s["pts"], None, shown, s["size"], forced=all(p.forced for p in shown), key=key)
-            opacity = max(int(p.alpha.max()) for p in shown)
+        if shown or skipped:
+            open_ = Picture(s["pts"], None, shown, s["size"], forced=bool(shown) and all(p.forced for p in shown),
+                            key=key, skipped=len(skipped))
+            opacity = max((int(p.alpha.max()) for p in shown), default=0)
     if open_ is not None:
         out.append(open_)
     return out

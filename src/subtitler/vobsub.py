@@ -17,8 +17,10 @@ control sequences begin, its pixels and the control sequences:
 The pixels are two bits each, run-length coded by nibbles, a line at a time,
 the top field's lines (0, 2, 4, ...) apart from the bottom field's.
 
-A subpicture whose display area is larger than the video the .idx names is
-refused (ValueError), before its pixels are decoded.
+A subpicture whose display area is larger than the video the .idx names (or
+4096 on a side, where it names none) is left out before its pixels are
+decoded: a picture of no objects (`skipped`), which the OCR step counts as
+read as nothing.
 
 The pictures are pgs.Picture, so the OCR step reads either the same way.
 Pure Python and numpy; nothing is written.
@@ -38,7 +40,8 @@ TICK = 1024 / 90_000.0  # a control sequence's delay unit, in seconds
 
 
 def read_idx(text: str) -> dict:
-    """The .idx: size, palette (16 x RGB), and the timestamps (seconds) and file positions."""
+    """The .idx: size (None where it names none), palette (16 x RGB), and the timestamps (seconds) and
+    file positions."""
     size, palette, entries, delay = None, [], [], 0.0
     for line in text.splitlines():
         s = line.strip()
@@ -59,7 +62,7 @@ def read_idx(text: str) -> dict:
                 entries.append((delay + (-t if m.group(1) else t), int(m.group(6), 16)))
     while len(palette) < 16:
         palette.append((0, 0, 0))
-    return {"size": size or (720, 576), "palette": palette[:16], "entries": entries}
+    return {"size": size, "palette": palette[:16], "entries": entries}
 
 
 def _packets(sub: bytes, pos: int):
@@ -159,8 +162,8 @@ def _rle_field(spu: bytes, offset: int, width: int, lines: int, out: np.ndarray,
 
 def decode_spu(spu: bytes, video: tuple[int, int] = (0, 0)) -> dict | None:
     """A subpicture unit: its start and stop (seconds after its timestamp), whether forced, its
-    area, its colours and contrasts, and its pixels (values 0-3). ValueError for an area larger
-    than the video (pgs.too_large)."""
+    area, its colours and contrasts, and its pixels (values 0-3); for an area larger than the video
+    (pgs.too_large; 0 x 0: no video size known) no pixels, and why (`skipped`)."""
     if len(spu) < 4:
         return None
     ctrl = struct.unpack_from(">H", spu, 2)[0]
@@ -212,7 +215,7 @@ def decode_spu(spu: bytes, video: tuple[int, int] = (0, 0)) -> dict | None:
         return None
     why = too_large(area[2], area[3], video)
     if why:
-        raise ValueError(why)
+        return {"start": start or 0.0, "stop": stop, "forced": forced, "area": area, "skipped": why}
     pixels = np.zeros((area[3], area[2]), dtype=np.uint8)
     _rle_field(spu, offsets[0], area[2], area[3], pixels, 0)
     _rle_field(spu, offsets[1], area[2], area[3], pixels, 1)
@@ -222,15 +225,23 @@ def decode_spu(spu: bytes, video: tuple[int, int] = (0, 0)) -> dict | None:
 
 def pictures(idx_text: str, sub: bytes, min_alpha: int = 16) -> list[Picture]:
     """What the track shows, in order: a Picture a subpicture with anything visible in it, from its
-    start to its stop, or to the next one's start where it has no stop (or a later one)."""
+    start to its stop, or to the next one's start where it has no stop (or a later one); one too large
+    to be one (larger than the video the .idx names) a picture of no objects (`skipped`)."""
     idx = read_idx(idx_text)
+    video = idx["size"] or (0, 0)  # no size named: no bound but MAX_SIDE
+    size = idx["size"] or (720, 576)
     rgb = np.array(idx["palette"], dtype=np.float32)
     luma = np.clip(0.299 * rgb[:, 0] + 0.587 * rgb[:, 1] + 0.114 * rgb[:, 2], 0, 255).astype(np.uint8)
     out: list[Picture] = []
     for t, pos in sorted(idx["entries"]):
         spu = spu_at(sub, pos)
-        s = decode_spu(spu, idx["size"]) if spu else None
+        s = decode_spu(spu, video) if spu else None
         if s is None:
+            continue
+        if s.get("skipped"):
+            start = t + s["start"]
+            end = t + s["stop"] if s["stop"] is not None and s["stop"] > s["start"] else None
+            out.append(Picture(start, end, [], size, skipped=1))
             continue
         lum = luma[np.array(s["colours"])][s["pixels"]]
         alpha = (np.array(s["contrast"], dtype=np.uint8) * 17)[s["pixels"]]
@@ -239,7 +250,7 @@ def pictures(idx_text: str, sub: bytes, min_alpha: int = 16) -> list[Picture]:
         x, y, _, _ = s["area"]
         start = t + s["start"]
         end = t + s["stop"] if s["stop"] is not None and s["stop"] > s["start"] else None
-        out.append(Picture(start, end, [Placed(x, y, lum, alpha, s["forced"])], idx["size"], forced=s["forced"]))
+        out.append(Picture(start, end, [Placed(x, y, lum, alpha, s["forced"])], size, forced=s["forced"]))
     out.sort(key=lambda p: p.start)
     for a, b in zip(out, out[1:]):
         if a.end is None or a.end > b.start:

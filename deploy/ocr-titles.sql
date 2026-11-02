@@ -14,10 +14,10 @@
 -- - an image subtitle of the version the title plays (complete, not superseded), in its folder's
 --   subs/; one entry a title: its version folder and the version's id (what `subtitler attach`
 --   checks the title still plays);
--- - a text subtitle of the same language and kind covers it: the package's own, and one attached
---   that came from the title's file or elsewhere (source, provider) or that a run before made
---   (recognized), so a run after a run takes the rest; one a model made (translated, transcribed)
---   covers none.
+-- - a text subtitle of the same language and kind covers it (a forced one signs too: both are
+--   forced): the package's own, and one attached that came from the title's file or elsewhere
+--   (source, provider) or that a run before made (recognized), so a run after a run takes the rest;
+--   one a model made (translated, transcribed) and commentary cover none.
 -- Its last word is the run's: it reads package.json and plans each title again, and the attach
 -- step refuses a second copy of a language and kind.
 WITH s AS (
@@ -51,7 +51,7 @@ todo AS (
   SELECT DISTINCT ON (b.item_id) b.item_id, b.dir AS package, b.version
   FROM b
   WHERE NOT EXISTS (SELECT 1 FROM s t WHERE t.item_id = b.item_id AND NOT t.bitmap AND t.lang = b.lang
-                    AND t.kind = b.kind AND NOT t.commentary
+                    AND (t.kind = b.kind OR (b.kind = 'signs' AND t.kind = 'forced')) AND NOT t.commentary
                     AND (t.origin IS NULL OR t.origin IN ('source', 'provider', 'recognized'))
                     AND (b.lang <> 'zh' OR b.script IS NULL OR t.script IS NULL OR t.script = b.script))
   ORDER BY b.item_id, b.completedat DESC NULLS LAST)
