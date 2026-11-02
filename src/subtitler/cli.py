@@ -4,6 +4,7 @@
     subtitler run  PACKAGE --out DIR --languages en,de,zh-Hans [options]
     subtitler extract --titles titles.json --out DIR [options]            (extract.py: a title's own tracks)
     subtitler ocr  --titles titles.json --out DIR [options]               (recognize.py: image subtitles' text)
+    subtitler attach --out DIR --url URL [--token-file F] [--dry-run]     (attach.py: the copies, to their titles)
     subtitler job  --titles titles.json --out DIR --models DIR [options]   (job.py: titles with no package yet)
 
 `plan` prints what would be done per language. `run` does it and writes
@@ -114,18 +115,21 @@ class Runner:
         """Each copy read (OCR) and, where it reads surely enough, written; its cues by its id."""
         from . import ocr
         from .recognize import entry as ocr_entry
+        from .recognize import made_already
 
-        texts = {}
+        texts, first = {}, {}
         for c in made:
             t0 = time.perf_counter()
             try:
                 lang, r = ocr.read_track(pkg.root / c.sub.path, c.sub.format, c.lang, tessdata=self.a.tessdata,
                                          jobs=self.a.ocr_jobs, min_confidence=self.a.min_confidence,
                                          bilingual=c.sub.bilingual, models=self.a.models)
-            except (LookupError, ValueError, OSError, RuntimeError) as e:
-                rejected.append({"source": c.sub.id, "language": c.lang.tag, "kind": c.kind, "why": str(e)})
-                print(f"{c.lang.tag}: no text copy of {c.sub.id}: {e}", file=sys.stderr)
+            except Exception as e:  # noqa: BLE001 - a copy that cannot be made leaves its language to the next
+                rejected.append({"source": c.sub.id, "language": c.lang.tag, "kind": c.kind, "why": str(e) or repr(e)})
+                print(f"{c.lang.tag}: no text copy of {c.sub.id}: {e!r}", file=sys.stderr)
                 continue
+            if r.accepted:  # two Chinese tracks read as the same script: the first one's copy
+                r.rejected = made_already(first, lang, c.kind, c.sub.id)
             entry = ocr_entry(c, lang, r, __version__)
             if not r.accepted:
                 rejected.append({**entry, "why": r.rejected})
@@ -240,6 +244,10 @@ def main(argv: list[str] | None = None) -> int:
         from . import recognize
 
         return recognize.main(args[1:])
+    if args and args[0] == "attach":  # the copies `subtitler ocr` made, attached through the catalog's seam
+        from . import attach
+
+        return attach.main(args[1:])
     if args and args[0] == "transcribe":  # one title's speech recognition in a process of its own
         from . import transcribe
 
@@ -281,7 +289,8 @@ def main(argv: list[str] | None = None) -> int:
     a = ap.parse_args(args)
 
     langs = parse_list(a.languages)
-    pkg = load(a.package, {x.code for x in langs})
+    # Without OCR the image subtitles' pictures are not counted: the plan is the one before OCR was.
+    pkg = load(a.package, {x.code for x in langs} if a.ocr else set())
     made = [c for c in copies(pkg, langs) if c.id not in a.exclude] if a.ocr else []  # a reported copy too
     plans = plan(pkg, langs, a.original_language, tuple(a.exclude), a.source_order, ocr=a.ocr, made=made)
     _print_plan(pkg, plans, made)

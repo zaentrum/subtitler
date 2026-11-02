@@ -105,3 +105,15 @@ def test_plan_names_the_copies(make_package, capsys):
     assert main(["plan", str(root), "--languages", "en"]) == 0
     text = capsys.readouterr().out
     assert "ocr      sub0 (pgs, en, forced): a text copy" in text and "en       keep sub1" in text
+
+
+def test_without_ocr_the_plan_is_the_one_before_it(make_package, capsys):
+    # A sparse image track (signs and songs, by its pictures) is not counted without OCR: it is a
+    # subtitle a client draws, as it was.
+    root = make_package(subs=[{"language": "ger", "format": "pgs", "cues": 3}], duration_ms=6_000_000)
+    assert main(["plan", str(root), "--languages", "de", "--no-ocr"]) == 0
+    text = capsys.readouterr().out
+    assert "de       keep sub0" in text and "partial" not in text
+    assert main(["plan", str(root), "--languages", "de"]) == 0
+    text = capsys.readouterr().out
+    assert "ocr      sub0 (pgs, de, signs): a text copy" in text and "partial" in text
