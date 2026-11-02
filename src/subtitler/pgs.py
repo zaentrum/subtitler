@@ -21,6 +21,10 @@ on), so a later set may show an object an earlier one defined. Sets that
 show the same thing again (acquisition points, a palette-only update of a
 fade) are one picture; a set whose pixels are all transparent shows nothing.
 
+An object is at most as large as the video it is shown on (and PGS allows no
+side over 4096): a stream whose object claims more is refused (PgsError)
+before its pixels are decoded, as a few bytes can claim gigabytes.
+
 Pure Python and numpy; nothing is written.
 """
 
@@ -37,6 +41,7 @@ import numpy as np
 PDS, ODS, PCS, WDS, END = 0x14, 0x15, 0x16, 0x17, 0x80
 EPOCH_START, ACQUISITION_POINT = 0x80, 0x40
 CLOCK = 90_000.0
+MAX_SIDE = 4096  # PGS objects (and VobSub areas) are no larger on a side; nor larger than their video
 
 
 class PgsError(ValueError):
@@ -166,6 +171,15 @@ def _full_range(y: np.ndarray) -> np.ndarray:
     return np.clip((y.astype(np.int32) - 16) * 255 // 219, 0, 255).astype(np.uint8)
 
 
+def too_large(w: int, h: int, video: tuple[int, int]) -> str | None:
+    """Why an object (a subpicture) of w x h cannot be one on a video of that size: wider or higher
+    than the video (MAX_SIDE where the video has no size) or than MAX_SIDE; None where it fits."""
+    vw, vh = video
+    if w > min(vw or MAX_SIDE, MAX_SIDE) or h > min(vh or MAX_SIDE, MAX_SIDE):
+        return f"an object of {w}x{h} pixels, larger than its video ({vw}x{vh}) or {MAX_SIDE} on a side"
+    return None
+
+
 def display_sets(data: bytes) -> Iterator[dict]:
     """The display sets of a stream, one after the other, each with the screen it leaves: its PTS,
     whether it is an epoch start, whether only its palette changes, and its objects decoded (their
@@ -174,12 +188,14 @@ def display_sets(data: bytes) -> Iterator[dict]:
     objects: dict[int, _Object] = {}
     decoded: dict[tuple, np.ndarray] = {}
     cur: dict | None = None
+    video = (0, 0)
     for seg in segments(data):
         d = seg.data
         if seg.kind == PCS:
             if len(d) < 11:
                 raise PgsError("a composition segment too short")
             width, height, _rate, number, state, pal_update, pal_id, count = struct.unpack_from(">HHBHBBBB", d, 0)
+            video = (width, height)
             if state & EPOCH_START:
                 palettes.clear()
                 objects.clear()
@@ -206,6 +222,9 @@ def display_sets(data: bytes) -> Iterator[dict]:
                 if len(d) < 11:
                     raise PgsError("an object segment too short")
                 w, h = struct.unpack_from(">HH", d, 7)
+                why = too_large(w, h, video)
+                if why:
+                    raise PgsError(why)
                 objects[oid] = _Object(version, w, h, bytearray(d[11:]), bool(seq & 0x40))
             elif oid in objects:
                 objects[oid].data += d[4:]

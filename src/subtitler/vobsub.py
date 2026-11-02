@@ -17,6 +17,9 @@ control sequences begin, its pixels and the control sequences:
 The pixels are two bits each, run-length coded by nibbles, a line at a time,
 the top field's lines (0, 2, 4, ...) apart from the bottom field's.
 
+A subpicture whose display area is larger than the video the .idx names is
+refused (ValueError), before its pixels are decoded.
+
 The pictures are pgs.Picture, so the OCR step reads either the same way.
 Pure Python and numpy; nothing is written.
 """
@@ -29,7 +32,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .pgs import Picture, Placed
+from .pgs import Picture, Placed, too_large
 
 TICK = 1024 / 90_000.0  # a control sequence's delay unit, in seconds
 
@@ -154,9 +157,10 @@ def _rle_field(spu: bytes, offset: int, width: int, lines: int, out: np.ndarray,
         y += 2
 
 
-def decode_spu(spu: bytes) -> dict | None:
+def decode_spu(spu: bytes, video: tuple[int, int] = (0, 0)) -> dict | None:
     """A subpicture unit: its start and stop (seconds after its timestamp), whether forced, its
-    area, its colours and contrasts, and its pixels (values 0-3)."""
+    area, its colours and contrasts, and its pixels (values 0-3). ValueError for an area larger
+    than the video (pgs.too_large)."""
     if len(spu) < 4:
         return None
     ctrl = struct.unpack_from(">H", spu, 2)[0]
@@ -206,6 +210,9 @@ def decode_spu(spu: bytes) -> dict | None:
         pos = nxt
     if area is None or offsets is None or area[2] <= 0 or area[3] <= 0:
         return None
+    why = too_large(area[2], area[3], video)
+    if why:
+        raise ValueError(why)
     pixels = np.zeros((area[3], area[2]), dtype=np.uint8)
     _rle_field(spu, offsets[0], area[2], area[3], pixels, 0)
     _rle_field(spu, offsets[1], area[2], area[3], pixels, 1)
@@ -222,7 +229,7 @@ def pictures(idx_text: str, sub: bytes, min_alpha: int = 16) -> list[Picture]:
     out: list[Picture] = []
     for t, pos in sorted(idx["entries"]):
         spu = spu_at(sub, pos)
-        s = decode_spu(spu) if spu else None
+        s = decode_spu(spu, idx["size"]) if spu else None
         if s is None:
             continue
         lum = luma[np.array(s["colours"])][s["pixels"]]

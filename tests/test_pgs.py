@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import struct
+
 import numpy as np
 import pytest
-from synth import PALETTE, again, clear, rle, show
+from synth import END, ODS, PALETTE, again, clear, ods, pcs, pds, rle, segment, show
 
 from subtitler import pgs
 
@@ -90,3 +92,24 @@ def test_count_reads_the_composition_segments_alone(tmp_path):
     f.write_bytes(b"PG\x00\x00")
     with pytest.raises(pgs.PgsError):
         pgs.count(f)
+
+
+def test_an_object_larger_than_its_video_is_refused_before_it_is_decoded(monkeypatch):
+    # A few bytes whose object claims 60000 x 60000 pixels (3.6 GB once decoded): refused unread.
+    claim = struct.pack(">HBB", 0, 0, 0xC0) + (7).to_bytes(3, "big") + struct.pack(">HH", 60000, 60000) + b"\x01\x00\x00"
+    data = (pcs(1.0, [{"id": 0, "x": 0, "y": 0}]) + pds(1.0, PALETTE) + segment(ODS, 1.0, claim)
+            + segment(END, 1.0, b"") + clear(2.0))
+    real = pgs.decode_rle
+    monkeypatch.setattr(pgs, "decode_rle", lambda *a: pytest.fail("decoded"))
+    with pytest.raises(pgs.PgsError, match="60000x60000"):
+        pgs.pictures(data)
+    monkeypatch.setattr(pgs, "decode_rle", real)
+    # An object as wide as its video is one (a line across the screen); on a smaller video it is not.
+    line = np.zeros((40, 1920), dtype=np.uint8)
+    line[10:30, 100:1800] = 1
+    assert pgs.pictures(show(1.0, [(0, 0, 900, line)]) + clear(2.0))[0].objects[0].width == 1920
+    small = (pcs(1.0, [{"id": 0, "x": 0, "y": 0}], size=(720, 480)) + pds(1.0, PALETTE) + ods(1.0, 0, line)
+             + segment(END, 1.0, b""))
+    with pytest.raises(pgs.PgsError, match="larger than its video \\(720x480\\)"):
+        pgs.pictures(small)
+    assert pgs.too_large(5000, 10, (0, 0)) and not pgs.too_large(4096, 4096, (0, 0))  # no size: 4096 a side

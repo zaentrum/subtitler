@@ -51,3 +51,12 @@ def test_a_unit_without_a_stop_ends_at_the_next_one():
     idx, sub = vobsub([(1.0, spu(a, 0, 0, 0.0, 0.0)), (4.0, spu(a, 0, 0, 0.0, 1.0))])
     pics = vs.pictures(idx, sub)
     assert pics[0].end == pytest.approx(4.0) and pics[1].end == pytest.approx(5.0, abs=0.012)
+
+
+def test_a_subpicture_larger_than_its_video_is_refused():
+    a = bitmap(10, 50, 3)
+    idx, sub = vobsub([(1.0, spu(a, 0, 0, 0.0, 1.0))], size=(40, 480))
+    with pytest.raises(ValueError, match="an object of 50x10 pixels, larger than its video"):
+        vs.pictures(idx, sub)
+    idx, sub = vobsub([(1.0, spu(a, 0, 0, 0.0, 1.0))], size=(50, 480))
+    assert vs.pictures(idx, sub)[0].objects[0].width == 50
