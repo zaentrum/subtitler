@@ -21,9 +21,10 @@
 #
 #   oc -n NAMESPACE create configmap subtitler-ocr-titles --from-file=titles.json
 #
-# (or `... --dry-run=client -o yaml | oc apply --server-side -f -` to replace
-# one there is); ConfigMaps hold up to 1 MiB. Run it with --dry-run first: it
-# reads package.json alone and says what each title would be read for.
+# (to replace one there is, `... --dry-run=client -o yaml | oc apply
+# --server-side --force-conflicts -f -`: `create` made its fields its own);
+# ConfigMaps hold up to 1 MiB. Run it with --dry-run first: it reads
+# package.json alone and says what each title would be read for.
 #
 # Paced for the shared store: --hours 22-17 reads nothing from 17:00 to
 # 22:00 UTC (the evening's playback), --read-mbps caps each file's read, a

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
@@ -19,6 +20,8 @@ class Catalog:
         self.items = {}
         self.posted = []
         self.tokens = set()
+        self.gets = 0
+        self.origins = None  # the origins it takes, where not every one
 
     def serve(self):
         catalog = self
@@ -28,9 +31,9 @@ class Catalog:
                 pass
 
             def _answer(self, status, body):
-                data = json.dumps(body).encode()
+                data = body if isinstance(body, bytes) else json.dumps(body).encode()
                 self.send_response(status)
-                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Type", "text/html" if isinstance(body, bytes) else "application/json")
                 self.send_header("Content-Length", str(len(data)))
                 self.end_headers()
                 self.wfile.write(data)
@@ -42,8 +45,13 @@ class Catalog:
 
             def do_GET(self):
                 item = self._item()
+                catalog.gets += 1
                 if item is None:
                     return self._answer(404, {"error": "no such title"})
+                if item.get("mode") == "401":
+                    return self._answer(401, {"error": "a valid bearer token is required"})
+                if item.get("mode") == "sign-in":
+                    return self._answer(200, b"<html>sign in</html>")
                 self._answer(200, {"itemId": item["id"], "versionId": item["version"], "attachable": True,
                                    "subtitles": item["subtitles"]})
 
@@ -51,10 +59,15 @@ class Catalog:
                 item = self._item()
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 catalog.posted.append((item["id"], body))
+                if catalog.origins is not None and body["origin"] not in catalog.origins:
+                    return self._answer(400, {"error": "origin must be one of " + ", ".join(catalog.origins)})
                 sub = {"id": f"att-{len(catalog.posted)}", "language": body["language"], "label": body["label"],
                        "format": "webvtt", "forced": body["forced"], "sdh": body["sdh"], "origin": body["origin"],
                        "attached": True, "versionId": item["version"]}
-                item["subtitles"].append(sub)
+                if item.get("mode") != "lost":  # "lost": a POST that times out and attaches nothing
+                    item["subtitles"].append(sub)
+                if item.get("mode") in ("late", "lost"):
+                    time.sleep(1.5)  # answered after the client gave up
                 self._answer(201, {"itemId": item["id"], "created": True, "subtitle": sub})
 
         server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
@@ -148,3 +161,81 @@ def test_the_kind_and_language_as_the_catalog_tells_them():
 def test_without_a_token_nothing_is_asked(tmp_path, monkeypatch):
     monkeypatch.delenv("KATALOG_TOKEN", raising=False)
     assert attach.main(["--out", str(tmp_path), "--url", "http://127.0.0.1:9"]) == 2
+
+
+def test_commentary_covers_nothing_and_a_forced_text_track_covers_signs(catalog, tmp_path):
+    catalog.items = {
+        "item-1": {"id": "item-1", "version": "v1", "subtitles": [
+            {"id": "own-c", "language": "eng", "label": "Commentary", "format": "webvtt", "forced": False,
+             "sdh": False, "origin": None},  # the director's commentary: no English dialogue
+            {"id": "own-f", "language": "eng", "label": "English (Forced)", "format": "webvtt", "forced": True,
+             "sdh": False, "origin": None}]},  # its own forced track: two forced English tracks would be one too many
+        "item-2": {"id": "item-2", "version": "v1", "subtitles": []}}
+    run_folder(tmp_path, "item-1", "v1", [copy("en.vtt", "en", "English · OCR"),
+                                          copy("en.signs.vtt", "en", "English · Signs · OCR", forced=True,
+                                               kind="signs")])
+    # A run's own forced copy goes before its signs copy, and covers it.
+    run_folder(tmp_path, "item-2", "v1", [copy("de.signs.vtt", "de", "Deutsch · Signs · OCR", forced=True,
+                                               kind="signs"),
+                                          copy("de.forced.vtt", "de", "Deutsch (Forced) · OCR", forced=True,
+                                               kind="forced")])
+    token = tmp_path / "token"
+    token.write_text("secret")
+    assert attach.main(["--out", str(tmp_path / "out"), "--url", catalog.url, "--token-file", str(token)]) == 0
+    assert [(i, b["label"]) for i, b in catalog.posted] == [("item-1", "English · OCR"),
+                                                             ("item-2", "Deutsch (Forced) · OCR")]
+    r = json.loads((tmp_path / "out" / "item-1" / "attach.json").read_text())
+    assert r["not_attached"][0]["covered_by"] == "own-f" and "(en, forced): own-f" in r["not_attached"][0]["why"]
+    r = json.loads((tmp_path / "out" / "item-2" / "attach.json").read_text())
+    assert r["not_attached"][0]["file"] == "de.signs.vtt" and "a text copy of an image subtitle" in r["not_attached"][0]["why"]
+
+
+@pytest.mark.parametrize("mode, why", [("401", "refuses the token"), ("sign-in", "no JSON (a sign-in page?)")])
+def test_what_every_title_would_be_refused_for_stops_the_run(catalog, tmp_path, mode, why, capsys):
+    catalog.items = {f"item-{k}": {"id": f"item-{k}", "version": "v1", "subtitles": [], "mode": mode}
+                     for k in range(5)}
+    for k in range(5):
+        run_folder(tmp_path, f"item-{k}", "v1", [copy("en.vtt", "en", "English · OCR")])
+    token = tmp_path / "token"
+    token.write_text("secret")
+    rc = attach.main(["--out", str(tmp_path / "out"), "--url", catalog.url, "--token-file", str(token)])
+    assert rc == attach.STOPPED and catalog.gets == 1 and catalog.posted == []
+    assert why in capsys.readouterr().out
+    assert why in json.loads((tmp_path / "out" / "attach-run.json").read_text())["stopped"]
+
+
+def test_a_seam_that_takes_no_origin_recognized_stops_the_run_at_its_first_copy(catalog, tmp_path, capsys):
+    catalog.origins = ["source", "provider", "transcribed", "translated", "converted"]
+    catalog.items = {f"item-{k}": {"id": f"item-{k}", "version": "v1", "subtitles": []} for k in range(5)}
+    for k in range(5):
+        run_folder(tmp_path, f"item-{k}", "v1", [copy("en.vtt", "en", "English · OCR")])
+    token = tmp_path / "token"
+    token.write_text("secret")
+    rc = attach.main(["--out", str(tmp_path / "out"), "--url", catalog.url, "--token-file", str(token)])
+    assert rc == attach.STOPPED and len(catalog.posted) == 1
+    assert "takes no origin recognized" in capsys.readouterr().out
+    assert attach.main(["--out", str(tmp_path / "out"), "--url", "http://127.0.0.1:9",
+                        "--token-file", str(token)]) == attach.STOPPED  # no seam there
+
+
+def test_a_post_not_answered_in_time_is_asked_after_and_a_lost_record_is_found(catalog, tmp_path, monkeypatch):
+    monkeypatch.setattr(attach.Seam.__init__, "__defaults__", (0.5,))  # a short timeout
+    catalog.items = {"item-late": {"id": "item-late", "version": "v1", "subtitles": [], "mode": "late"},
+                     "item-lost": {"id": "item-lost", "version": "v1", "subtitles": [], "mode": "lost"},
+                     "item-ok": {"id": "item-ok", "version": "v1", "subtitles": []}}
+    for item in catalog.items:
+        run_folder(tmp_path, item, "v1", [copy("en.vtt", "en", "English · OCR")])
+    token = tmp_path / "token"
+    token.write_text("secret")
+    out = tmp_path / "out"
+    assert attach.main(["--out", str(out), "--url", catalog.url, "--token-file", str(token)]) == 1
+    late = json.loads((out / "item-late" / "attach.json").read_text())
+    assert late["attached"][0]["after_a_timeout"] and late["attached"][0]["subtitle"] == "att-1"
+    lost = json.loads((out / "item-lost" / "attach.json").read_text())
+    assert not lost["attached"] and "the next run sends it again" in lost["errors"][0]["why"]
+    # A record lost: the copy the title has is found, not sent again, nor refused.
+    (out / "item-ok" / "attach.json").unlink()
+    posts = len(catalog.posted)
+    assert attach.main(["--out", str(out), "--url", catalog.url, "--token-file", str(token), "--only", "item-ok"]) == 0
+    ok = json.loads((out / "item-ok" / "attach.json").read_text())
+    assert len(catalog.posted) == posts and ok["attached"][0]["found"] and not ok["not_attached"]

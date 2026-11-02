@@ -99,11 +99,14 @@ translation), as the source's own text subtitles are.
 
 Which tracks (`plan.copies`): an image subtitle in one of the languages
 (Chinese of either script: the one its characters are in, read on a sample
-whether or not its title names one; not written Cantonese), not commentary, of a kind (full, SDH, forced; a track
-far sparser than the title's fullest, signs and songs, is a kind of its own)
-that the title has no text subtitle of in that language; of several of a
-language and kind, the fullest. A forced one is copied where a full text
-subtitle of its language is there: it is a kind of its own.
+whether or not its title names one; not written Cantonese), not
+commentary, of a kind (full, SDH, forced; a track far sparser than the
+title's fullest, signs and songs, is a kind of its own) that the title has
+no text subtitle of in that language; of several of a language and kind,
+the fullest. A forced one is copied where a full text subtitle of its
+language is there: it is a kind of its own. A track of signs and songs is
+not copied where its language has a forced subtitle, a text one or a copy:
+both would be forced, and a language is to have one.
 
 How (`ocr.py`):
 
@@ -156,15 +159,17 @@ language's next candidate makes the language's subtitle, where
   apart;
 - a copy of its language and kind is made already (two Chinese tracks read
   as the same script: the first one's is kept);
-- a Chinese track whose title names a script and whose characters, read on
-  a sample, tell no script clearly (it is not read further).
+- a Chinese track whose title names no script and whose characters, read
+  on a sample, tell none (a short track, under 20 characters; it is not read
+  further).
 
 A language without a Tesseract model is not read, and said so; a model the
 image does not have is fetched into `--models` (tessdata_fast 4.1.0;
 tessdata_best for Chinese) and checked against its SHA-256, which this
-repository keeps for every model a language is read with. A track whose
-picture claims more than its video's size (or 4096 pixels on a side) is
-not decoded.
+repository keeps for every model a language is read with. An object (a
+VobSub subpicture) larger than its video, or than 4096 pixels on a side, is
+left out undecoded, and its picture counts as one read as nothing; an .idx
+that names no video size bounds its subpictures by 4096 alone.
 
 The label is the track's own name and a plain mark, as a made subtitle's
 says how it was made ("German · AI"): "English (Forced) · OCR", or the
@@ -213,9 +218,14 @@ subtitler attach --out /work --url https://KATALOG_MANAGER --token-file /secrets
 with why, where the title now plays another version than the one it was
 read from, or has a subtitle of the copy's language and kind that covers it
 (a copy attached before, or a text subtitle of its own, from its package,
-its file or a provider; the kind told as the catalog's rows tell it).
-`<out>/<id>/attach.json` says what was attached; a copy attached before is
-not sent again.
+its file or a provider, not commentary; the kind told as the catalog's rows
+tell it, a forced one covering signs and songs too). A title's copies go
+full, SDH, forced, then signs. `<out>/<id>/attach.json` says what was
+attached; a copy attached before is not sent again, one the title has
+already (its record lost) is recorded as attached, and a POST the seam does
+not answer in time is asked after. The run stops, exit code 3, where the
+seam would refuse every title: the token (401, 403), the origin
+`recognized` (400), an answer that is no JSON, no seam at the address.
 
 ### How well it reads
 
@@ -293,15 +303,17 @@ way. Where the title names a script, the characters confirm it, or, where
 they lean the other way, the copy is read and tagged in theirs: a
 Simplified track labelled Traditional reads at 84-86 with the Traditional
 model, and into Traditional characters, so that nothing in its copy would
-tell. Where they tell neither, a track whose title names a script is not
-attached, and the report says why; one whose title names none is read as
-Simplified. On the samples' Chinese tracks (five titled with their script,
-one of written Cantonese, a VobSub one with no title), eight samples of
-each: the script right for 48 of 48 where it is known, none unsure, the
-characters leaning 0.085-0.29; each titled track, labelled with its own
-script or with the other, read in its own (the Cantonese one, written in
-Traditional characters, Traditional). The two models' confidence alone,
-read one after the other, picked the wrong script for a sample in eight.
+tell. Where they tell neither (a short track, under 20 characters in its
+sample), a track whose title names a script is read in it; one whose title
+names none is not attached, and the report says why (Simplified by default
+read a short Traditional track at 83). On the samples' Chinese tracks (five
+titled with their script, one of written Cantonese, a VobSub one with no
+title), eight samples of each: the script right for 48 of 48 where it is
+known, none unsure, the characters leaning 0.085-0.29; each titled track,
+labelled with its own script or with the other, read in its own (the
+Cantonese one, written in Traditional characters, Traditional). The two
+models' confidence alone, read one after the other, picked the wrong script
+for a sample in eight.
 
 VobSub: five of the library's VobSub tracks in the instance's languages
 (of four films; the library has 32 in all) decoded and read, with no text
@@ -332,17 +344,17 @@ attached as `zh-Hans` is Chinese), Chinese of the script its tag or label
 names; the kind by the flags and the label (signs, forced, SDH, full); the
 image subtitles of the version a title plays; a text subtitle of the same
 language and kind covering one, the package's own, one attached from the
-title's file or a provider, or a copy a run before made (one a model made
-covers none). A text copy is due for 3,594 image subtitles of 2,409 titles
-(2,174 episodes, 235 films), 1,782 hours of runtime, 2,861 hours of tracks;
-among them 1,808 of the 1,828 titles whose only subtitles are images (the
-other 20 have none in a language of the instance that a version they play
-holds).
+title's file or a provider, or a copy a run before made (a forced one
+signs too; one a model made, and commentary, cover none). A text copy is
+due for 3,597 image subtitles of 2,411 titles (2,174 episodes, 237 films),
+1,786 hours of runtime, 2,868 hours of tracks; among them 1,810 of the
+1,830 titles whose only subtitles are images (the other 20 have none in a
+language of the instance that a version they play holds).
 
 | language | full | SDH | forced | signs | of them VobSub |
 |---|---|---|---|---|---|
-| English | 1,085 | 1,187 | 169 | 208 | 3 |
-| German | 777 | 28 | 8 | | 2 |
+| English | 1,086 | 1,187 | 170 | 208 | 3 |
+| German | 778 | 28 | 8 | | 2 |
 | Chinese | 132 (23 Simplified, 47 Traditional, 62 read to tell) | | | | 2 |
 
 What it would take, from the sample's 722 pictures and 15.3 MB of PGS an
@@ -351,7 +363,7 @@ about 10 CPU hours at the spike machine's speed (16.6 CPU seconds per 1,000
 pictures, Chinese 21); the cluster's cores are not measured: at half that
 speed 20 CPU hours, about 7 hours on three cores, one night within the
 hours it may read (22:00 to 17:00 UTC, 19 hours a day). 44 GB read from
-the store, each track once, at 20 MB/s at most, which is 36 minutes of
+the store, each track once, at 20 MB/s at most, which is 37 minutes of
 reading spread over the run (under 2 MB/s on average); nothing written to
 it.
 
@@ -368,8 +380,9 @@ oc -n NAMESPACE create configmap subtitler-ocr-titles --from-file=titles.json
 
 The backlog's list is some 640 kB, over the 256 KiB a client-side
 `oc apply` keeps in its annotation: the ConfigMap is made from the file
-(`create --from-file`, or `... --dry-run=client -o yaml | oc apply
---server-side -f -` to replace one; a ConfigMap holds up to 1 MiB). Then
+(`create --from-file`; to replace one, `... --dry-run=client -o yaml | oc
+apply --server-side --force-conflicts -f -`, as `create` made the fields
+its own; a ConfigMap holds up to 1 MiB). Then
 `subtitler ocr --dry-run` over it, then `deploy/ocr-job.yaml` (the image,
 CPU only, 3 cores; the media volume read-only, a work claim for the
 copies), which reads nothing from 17:00 to 22:00 UTC, each track once at 20

@@ -17,10 +17,25 @@ attached, and said why, where
   text subtitle of its own (its package's, a file beside its source, a
   stream of its original; or one attached from its file or a provider,
   origin `source`, `provider`). The kind is told as the catalog's rows tell
-  it: signs where the label says so, forced by the flag or the label, SDH by
-  the flag or the label, else full; Chinese of either script where one of
-  the two names none. A subtitle a model made (translated, transcribed,
-  converted) or an image one covers none.
+  it (deploy/ocr-titles.sql reads them the same way): signs where the label
+  says so, forced by the flag or the label, SDH by the flag or the label,
+  else full; a forced one covers a copy of signs and songs too, as both are
+  forced; Chinese of either script where one of the two names none. A
+  subtitle a model made (translated, transcribed, converted), an image one or
+  commentary covers none.
+
+A title's copies go in the order full, SDH, forced, signs (a copy of signs
+and songs after a forced one of its language, which covers it). A copy the
+title has already, the very one (a recognized copy of its language, kind
+and label: a run before attached it and its record is lost), is recorded as
+attached. A POST the seam does not answer in time is asked after: the copy
+is recorded as attached where the title has it now, and is sent again by
+the next run where it has not.
+
+The run stops, saying why and with exit code 3, where the seam refuses what
+every title would be refused: the token (401, 403), the origin `recognized`
+(400: a katalog-manager that does not take it yet), an answer that is no
+JSON (a sign-in page), or no seam at that address.
 
 Each title's outcome goes into <DIR>/<id>/attach.json: each copy attached,
 with the catalog's id of it, or not, with why; a copy attached before is not
@@ -49,12 +64,15 @@ from .recognize import read_json, say, write_json
 
 ORIGIN = "recognized"
 COVERING = (None, "source", "provider", ORIGIN)  # what a subtitle's origin is where it covers a copy
+ORDER = {"full": 0, "sdh": 1, "forced": 2, "signs": 3}  # a title's copies attached in this order
+STOPPED = 3  # the exit code of a run the seam refuses as a whole
 
 # The kind of a subtitle as the catalog's rows say it (deploy/ocr-titles.sql reads them the same way): a
 # package's rows carry SDH in their label alone.
 _SIGNS = re.compile(r"\bsigns?\b", re.I)
 _FORCED = re.compile(r"\bforced\b|foreign (language )?parts", re.I)
 _SDH = re.compile(r"\bsdh\b|hearing|\bcc\b|\[cc\]", re.I)
+_COMMENTARY = re.compile(r"comment|kommentar", re.I)
 
 
 def kind_of(s: dict) -> str:
@@ -81,19 +99,44 @@ def language_of(s: dict) -> tuple[str | None, str | None]:
     return "zh", lang.script or script.hints(s.get("label") or "")["script"]
 
 
+def _same_language(a: dict, b: dict) -> bool:
+    (code, sc), (c, ssc) = language_of(a), language_of(b)
+    return c == code and (code != "zh" or sc is None or ssc is None or sc == ssc)
+
+
 def covering(subtitles: list[dict], attach: dict) -> dict | None:
     """The subtitle of the title that covers the copy `attach` describes (its language, kind and,
-    for Chinese, script where both name one), a text subtitle of its own or a copy attached before;
-    None where none does."""
-    code, sc = language_of(attach)
+    for Chinese, script where both name one; a forced one covers signs too), a text subtitle of its
+    own or a copy attached before, commentary none; None where none does."""
     kind = kind_of(attach)
+    kinds = {kind, "forced"} if kind == "signs" else {kind}
     for s in subtitles:
         if (s.get("format") or "").lower() not in TEXT_FORMATS or s.get("origin") not in COVERING:
             continue
-        c, ssc = language_of(s)
-        if c == code and kind_of(s) == kind and (code != "zh" or sc is None or ssc is None or sc == ssc):
+        if _COMMENTARY.search(s.get("label") or "") or s.get("purpose") == "commentary":
+            continue
+        if kind_of(s) in kinds and _same_language(s, attach):
             return s
     return None
+
+
+def ours(s: dict, attach: dict) -> bool:
+    """Whether the title's subtitle s is the copy `attach` describes: recognized, of its language,
+    kind and label."""
+    return (s.get("origin") == ORIGIN and s.get("label") == attach.get("label") and kind_of(s) == kind_of(attach)
+            and _same_language(s, attach))
+
+
+class SeamTimeout(OSError):
+    """The seam did not answer in time."""
+
+
+class Stop(Exception):
+    """What the seam refuses every title for: the run stops."""
+
+    def __init__(self, why: str, partial: dict | None = None):
+        super().__init__(why)
+        self.partial = partial
 
 
 class Seam:
@@ -105,6 +148,8 @@ class Seam:
         self.timeout = timeout
 
     def _call(self, method: str, path: str, body: dict | None = None) -> tuple[int, dict]:
+        """(status, its JSON); SeamTimeout where it does not answer in time, Stop where there is no
+        seam at the address or its answer is no JSON."""
         data = json.dumps(body).encode() if body is not None else None
         headers = {"Authorization": f"Bearer {self.token}", "Accept": "application/json",
                    "User-Agent": f"subtitler/{__version__}"}
@@ -113,13 +158,25 @@ class Seam:
         req = urllib.request.Request(self.url + path, data=data, method=method, headers=headers)
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as r:
-                return r.status, json.loads(r.read() or b"{}")
+                status, raw = r.status, r.read()
         except urllib.error.HTTPError as e:
             try:
                 answer = json.loads(e.read() or b"{}")
             except ValueError:
                 answer = {}
             return e.code, answer if isinstance(answer, dict) else {"error": str(answer)}
+        except TimeoutError as e:
+            raise SeamTimeout(f"{method} {path}: no answer in {self.timeout:g} s") from e
+        except urllib.error.URLError as e:
+            if isinstance(e.reason, TimeoutError):
+                raise SeamTimeout(f"{method} {path}: no answer in {self.timeout:g} s") from e
+            raise Stop(f"the seam is not reached at {self.url}: {e.reason}") from e
+        try:
+            answer = json.loads(raw or b"{}")
+        except ValueError as e:
+            raise Stop(f"the seam answered {method} {path} with no JSON (a sign-in page?): "
+                       f"{raw[:80]!r}") from e
+        return status, answer if isinstance(answer, dict) else {"error": str(answer)}
 
     def _item(self, item: str) -> str:
         return f"/api/library/items/{urllib.parse.quote(item, safe='')}/subtitles"
@@ -135,16 +192,54 @@ def _why(status: int, answer: dict) -> str:
     return f"the seam answered {status}: {answer.get('error') or answer}"
 
 
+def _refused_as_a_whole(status: int, answer: dict) -> str | None:
+    """Why every title would be refused as this one is (the token, the origin), or None."""
+    if status in (401, 403):
+        return f"the seam refuses the token: {_why(status, answer)}"
+    if status == 400 and "origin" in str(answer.get("error") or "").lower():
+        return f"the seam takes no origin {ORIGIN} (a katalog-manager before it): {_why(status, answer)}"
+    return None
+
+
+def _there_after(seam: Seam, item: str, body: dict) -> tuple[dict | None, str | None]:
+    """After a POST the seam did not answer in time: (the copy, as the title has it now, or None;
+    why that is not known)."""
+    try:
+        status, answer = seam.subtitles(item)
+    except SeamTimeout as e:
+        return None, str(e)
+    if status != 200:
+        return None, _why(status, answer)
+    return next((s for s in answer.get("subtitles") or [] if ours(s, body)), None), None
+
+
 def attach_title(seam: Seam, folder: Path, r: dict, dry_run: bool = False) -> dict:
-    """A title's copies attached (or what would be): its attach.json's data."""
+    """A title's copies attached (or what would be): its attach.json's data. Stop where the seam
+    refuses what it would refuse every title for (its `partial`: what was done of this title)."""
     before = read_json(folder / "attach.json") if not dry_run else None
     sent = {x["file"]: x for x in (before or {}).get("attached", [])}
     out = {"id": r["id"], "name": r.get("name") or r["id"], "made_by": f"subtitler {__version__}",
            "version": r.get("version"), "attached": [x for x in sent.values()], "not_attached": [], "errors": []}
-    todo = [m for m in r.get("made", []) if m["file"] not in sent]
+    todo = sorted((m for m in r.get("made", []) if m["file"] not in sent),
+                  key=lambda m: ORDER.get(kind_of(m["attach"]), 9))
     if not todo:
         return out
-    status, answer = seam.subtitles(r["id"])
+    try:
+        return _attach(seam, folder, r, todo, out, dry_run)
+    except Stop as e:  # what was done of this title goes along
+        e.partial = out
+        raise
+
+
+def _attach(seam: Seam, folder: Path, r: dict, todo: list[dict], out: dict, dry_run: bool) -> dict:
+    try:
+        status, answer = seam.subtitles(r["id"])
+    except SeamTimeout as e:
+        out["errors"].append({"why": str(e)})
+        return out
+    fatal = _refused_as_a_whole(status, answer)
+    if fatal:
+        raise Stop(fatal)
     if status != 200:
         out["errors"].append({"why": _why(status, answer)})
         return out
@@ -164,23 +259,42 @@ def attach_title(seam: Seam, folder: Path, r: dict, dry_run: bool = False) -> di
             out["not_attached"].append({"file": m["file"], "why": f"its origin is {body['origin']}, not {ORIGIN}"})
             continue
         there = covering(subtitles, body)
+        if there is not None and ours(there, body):  # attached by a run before, its record lost
+            out["attached"].append({"file": m["file"], "subtitle": there.get("id"), "created": False, "found": True,
+                                    "language": body["language"], "label": body["label"]})
+            continue
         if there is not None:
             whose = ("a text copy of an image subtitle" if there.get("origin") == ORIGIN else
                      f"a text subtitle of its own (origin {there.get('origin') or 'none: the title has it'})")
             out["not_attached"].append({"file": m["file"], "covered_by": there.get("id"),
                                         "why": f"the title has {whose} of its language and kind "
-                                               f"({body['language']}, {kind_of(body)}): {there.get('id')}"})
+                                               f"({body['language']}, {kind_of(there)}): {there.get('id')}"})
             continue
         if dry_run:
             out["attached"].append({"file": m["file"], "dry_run": True, **body})
             subtitles.append({**body, "id": f"(would be) {m['file']}"})
             continue
         try:
-            body["content"] = (folder / m["file"]).read_text(encoding="utf-8")
+            content = (folder / m["file"]).read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError) as e:
             out["errors"].append({"file": m["file"], "why": f"its file cannot be read: {e}"})
             continue
-        status, answer = seam.attach(r["id"], body)
+        try:
+            status, answer = seam.attach(r["id"], {**body, "content": content})
+        except SeamTimeout as e:  # it may have been attached all the same: the title is asked
+            sub, unknown = _there_after(seam, r["id"], body)
+            if sub is None:
+                out["errors"].append({"file": m["file"], "why": f"{e}; " + (
+                    f"whether it was attached is not known ({unknown}): the next run asks again" if unknown else
+                    "the title does not have it: the next run sends it again")})
+                continue
+            out["attached"].append({"file": m["file"], "subtitle": sub.get("id"), "created": None,
+                                    "after_a_timeout": True, "language": body["language"], "label": body["label"]})
+            subtitles.append(sub)
+            continue
+        fatal = _refused_as_a_whole(status, answer)
+        if fatal:
+            raise Stop(fatal)
         if status not in (200, 201):
             out["errors"].append({"file": m["file"], "why": _why(status, answer)})
             continue
@@ -189,6 +303,14 @@ def attach_title(seam: Seam, folder: Path, r: dict, dry_run: bool = False) -> di
                                 "language": body["language"], "label": sub.get("label", body["label"])})
         subtitles.append(sub or {**body, "id": None})
     return out
+
+
+def _said(res: dict, dry_run: bool) -> str:
+    return (f"{res['name']}: " + ("would attach " if dry_run else "attached ")
+            + (", ".join(x["file"] + (" (there already)" if x.get("found") else "") for x in res["attached"])
+               or "nothing")
+            + "".join(f"; not {x['file']}: {x['why']}" for x in res["not_attached"])
+            + "".join(f"; error{' ' + x['file'] if x.get('file') else ''}: {x['why']}" for x in res["errors"]))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -209,31 +331,37 @@ def main(argv: list[str] | None = None) -> int:
     folders = sorted(f for f in out.iterdir() if (f / "ocr.json").is_file()) if out.is_dir() else []
     if a.only is not None:
         folders = [f for f in folders if f.name in set(a.only)]
-    results, rc = [], 0
+    results, rc, stopped = [], 0, None
     for folder in folders:
         r = read_json(folder / "ocr.json")
         if not isinstance(r, dict) or "error" in r or r.get("dry_run") or not r.get("made"):
             continue
         try:
             res = attach_title(seam, folder, r, a.dry_run)
-        except (OSError, ValueError) as e:  # the seam not reached, or no JSON from it
+        except Stop as e:
+            stopped = str(e)
+            res = e.partial
+        except (OSError, ValueError) as e:  # what the seam answered for this title alone
             res = {"id": r["id"], "name": r.get("name") or r["id"], "attached": [], "not_attached": [],
                    "errors": [{"why": f"the seam: {e}"}]}
-        if not a.dry_run:
-            write_json(folder / "attach.json", res)
-        results.append(res)
-        rc = rc or int(bool(res["errors"]))
-        say(f"{res['name']}: " + ("would attach " if a.dry_run else "attached ")
-            + (", ".join(x["file"] for x in res["attached"]) or "nothing")
-            + "".join(f"; not {x['file']}: {x['why']}" for x in res["not_attached"])
-            + "".join(f"; error{' ' + x['file'] if x.get('file') else ''}: {x['why']}" for x in res["errors"]))
+        if res is not None:
+            if not a.dry_run:
+                write_json(folder / "attach.json", res)
+            results.append(res)
+            rc = rc or int(bool(res["errors"]))
+            say(_said(res, a.dry_run))
+        if stopped:
+            break
     summary = {"made_by": f"subtitler {__version__}", "mode": "attach" + (" dry-run" if a.dry_run else ""),
-               "titles": results}
+               "titles": results, **({"stopped": stopped} if stopped else {})}
     if out.is_dir():
         write_json(out / ("attach-dry-run.json" if a.dry_run else "attach-run.json"), summary)
     say(f"attach: {len(results)} titles, {sum(len(x['attached']) for x in results)} copies "
         + ("would be " if a.dry_run else "") + f"attached, {sum(len(x['not_attached']) for x in results)} not, "
         f"{sum(len(x['errors']) for x in results)} errors")
+    if stopped:
+        say(f"attach: stopped, as every title would be refused: {stopped}")
+        return STOPPED
     return rc
 
 
