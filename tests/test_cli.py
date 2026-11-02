@@ -117,3 +117,29 @@ def test_without_ocr_the_plan_is_the_one_before_it(make_package, capsys):
     assert main(["plan", str(root), "--languages", "de"]) == 0
     text = capsys.readouterr().out
     assert "ocr      sub0 (pgs, de, signs): a text copy" in text and "partial" in text
+
+
+def test_a_chinese_track_whose_title_names_the_wrong_script_is_its_characters_script(make_package, tmp_path,
+                                                                                     monkeypatch):
+    from subtitler import ocr
+    from subtitler.langs import Lang
+
+    root = make_package(audio=[("chi", True)], subs=[{"language": "chi", "format": "pgs", "title": "繁體中字"}])
+
+    def read_track(path, fmt, lang, tessdata=None, jobs=0, min_confidence=80.0, bilingual=False, models=None):
+        got = Lang("zh", "Hans")  # its characters are Simplified, whatever its title says
+        text = "我们今天晚上去哪里吃饭？"
+        cues = [vtt.Cue(2.0 + 3 * i, 4.0 + 3 * i, text, meta={"conf": 88.0, "chars": len(text), "italic": False})
+                for i in range(40)]
+        return got, ocr.Recognized(cues, ocr.model_for(got), "Tesseract 5.0.0", 88.0, 40, 0, 0, 0, 1.0, 1.0, 80.0)
+
+    monkeypatch.setattr(ocr, "read_track", read_track)
+    out = tmp_path / "out"
+    assert main(["run", str(root), "--out", str(out), "--languages", "zh-Hans,zh-Hant"]) == 0
+    made = {x["language"]: x for x in json.loads((out / "subtitles.json").read_text())["made"]}
+    assert made["zh-Hans"]["origin"] == "recognized" and made["zh-Hans"]["label"] == "Chinese (Simplified) · OCR"
+    assert (made["zh-Hant"]["origin"], made["zh-Hant"]["source"]) == ("converted", "ocr:sub0")
+    assert vtt.read(out / "zh-Hans.vtt")[0].text == "我们今天晚上去哪里吃饭？"  # the copy, not written over
+    assert vtt.read(out / "zh-Hant.vtt")[0].text.startswith("我們今天晚上")  # its conversion (s2t)
+    assert "Its title names Chinese (Traditional); its characters are Chinese (Simplified)." in (
+        out / "zh-Hans.vtt").read_text()

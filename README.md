@@ -98,8 +98,8 @@ as present, and it is a source for the steps after it (a conversion, a
 translation), as the source's own text subtitles are.
 
 Which tracks (`plan.copies`): an image subtitle in one of the languages
-(Chinese of either script, by the track title, else by reading it; not
-written Cantonese), not commentary, of a kind (full, SDH, forced; a track
+(Chinese of either script: the one its characters are in, read on a sample
+whether or not its title names one; not written Cantonese), not commentary, of a kind (full, SDH, forced; a track
 far sparser than the title's fullest, signs and songs, is a kind of its own)
 that the title has no text subtitle of in that language; of several of a
 language and kind, the fullest. A forced one is copied where a full text
@@ -155,7 +155,9 @@ language's next candidate makes the language's subtitle, where
   at most; Danish and Norwegian (35-39 % of each other's) are not told
   apart;
 - a copy of its language and kind is made already (two Chinese tracks read
-  as the same script: the first one's is kept).
+  as the same script: the first one's is kept);
+- a Chinese track whose title names a script and whose characters, read on
+  a sample, tell no script clearly (it is not read further).
 
 A language without a Tesseract model is not read, and said so; a model the
 image does not have is fetched into `--models` (tessdata_fast 4.1.0;
@@ -282,14 +284,24 @@ of those of 50-70, 14 % of 70-85, 10 % of 85-90, 3 % of 90 and more. Per
 track it is 92-96 in the Latin scripts and 86-88 in Chinese: the gate of
 80 passes every one measured.
 
-A Chinese track whose title names no script is read on 40 of its pictures
-with both models together (`chi_sim+chi_tra`: each character read by the
-model that reads it better), and the script of the characters read tells
-it (OpenCC: how many of them a conversion into the other script changes):
-right for 24 samples of 24, four of each of the six tracks (the Cantonese
-one, written in Traditional characters, Traditional). The two models'
-confidence alone, read one after the other, picked the wrong script for a
-sample in eight.
+A Chinese track's script is the one its characters are in, whether or not
+its title names one: 40 of its pictures are read with both models together
+(`chi_sim+chi_tra`: each character read by the model that reads it better),
+and the script of the characters read tells it (OpenCC: how many of them a
+conversion into the other script changes) where they lean 0.02 or more one
+way. Where the title names a script, the characters confirm it, or, where
+they lean the other way, the copy is read and tagged in theirs: a
+Simplified track labelled Traditional reads at 84-86 with the Traditional
+model, and into Traditional characters, so that nothing in its copy would
+tell. Where they tell neither, a track whose title names a script is not
+attached, and the report says why; one whose title names none is read as
+Simplified. On the samples' Chinese tracks (five titled with their script,
+one of written Cantonese, a VobSub one with no title), eight samples of
+each: the script right for 48 of 48 where it is known, none unsure, the
+characters leaning 0.085-0.29; each titled track, labelled with its own
+script or with the other, read in its own (the Cantonese one, written in
+Traditional characters, Traditional). The two models' confidence alone,
+read one after the other, picked the wrong script for a sample in eight.
 
 VobSub: five of the library's VobSub tracks in the instance's languages
 (of four films; the library has 32 in all) decoded and read, with no text

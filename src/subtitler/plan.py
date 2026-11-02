@@ -23,7 +23,10 @@ Then for each language the instance names:
 
 Forced and commentary tracks are no subtitle of a language. Without OCR
 (ocr=False) image tracks a client draws (PGS) count as present but are no
-source. A Cantonese track is not Chinese of another script.
+source. A Cantonese track is not Chinese of another script. A Chinese copy is
+in the script reading finds (ocr.read_pictures), whatever its track's title
+names: a copy titled in one script is a candidate of both, the language's own
+where it reads in its script, a source to convert where it reads in the other.
 
 Each language keeps its ordered candidates: a viewer's report on a made
 subtitle excludes its source, and the next candidate makes it again; a copy
@@ -108,7 +111,7 @@ class Copy:
     """A text copy of an image subtitle to make (OCR; its origin `recognized`)."""
 
     sub: Subtitle
-    lang: Lang  # Chinese with its script where the track's title tells it, else found by reading it
+    lang: Lang  # Chinese with the script its track's title names (reading may find the other), else none
     kind: str  # full | sdh | forced | signs
 
     @property
@@ -202,6 +205,18 @@ def _source_rank(sub: Subtitle, original: str | None, langs: list[Lang], english
     return (tier, sub.is_sdh, not sub.visible, -(sub.cues or 0))
 
 
+def _recognize(c: Copy, lang: Lang) -> Candidate:
+    return Candidate("recognize", c.id, lang.code, {"format": c.sub.format, "kind": c.kind, "script": c.lang.script})
+
+
+def _convert(source: str, script: str | None, region: str | None, lang: Lang) -> Candidate:
+    if lang.script == "Hans":
+        config = "hk2s" if region == "HK" else "t2s"
+    else:
+        config = "s2hk" if region == "HK" else "s2t"
+    return Candidate("convert", source, "zh", {"config": config, "from_script": script})
+
+
 def plan(pkg: Package, languages: list[Lang], original_language: str | None = None,
          exclude: tuple[str, ...] | list[str] = (), source_order: str = "original", ocr: bool = True,
          made: list[Copy] | None = None) -> list[LanguagePlan]:
@@ -241,8 +256,7 @@ def plan(pkg: Package, languages: list[Lang], original_language: str | None = No
         own = [c for c in made if c.lang.code == lang.code
                and (lang.script is None or c.lang.script in (lang.script, None))]
         for c in sorted(own, key=lambda c: (c.kind == "sdh", c.lang.script is None)):
-            cands.append(Candidate("recognize", c.id, lang.code, {"format": c.sub.format, "kind": c.kind,
-                                                                   "script": c.lang.script}))
+            cands.append(_recognize(c, lang))
         # 3. The same language in the other script. A Chinese text track whose
         # script is unknown converts too: t2s leaves Simplified text as it is.
         if lang.code == "zh" and lang.script in ("Hans", "Hant"):
@@ -251,11 +265,17 @@ def plan(pkg: Package, languages: list[Lang], original_language: str | None = No
             chinese += [(c.id, c.lang.script, c.sub.region, c.kind == "sdh") for c in made if c.lang.code == "zh"]
             for sid, script, region, _ in sorted(chinese, key=lambda x: (x[1] is None, x[3], x[0].startswith(COPY))):
                 if script in (other, None):
-                    if lang.script == "Hans":
-                        config = "hk2s" if region == "HK" else "t2s"
-                    else:
-                        config = "s2hk" if region == "HK" else "s2t"
-                    cands.append(Candidate("convert", sid, "zh", {"config": config, "from_script": script}))
+                    cands.append(_convert(sid, script, region, lang))
+            # Reading tells a copy's script, its title may be wrong (a Simplified track
+            # labelled Traditional): one titled in this script converts where it reads
+            # in the other, one titled in the other is this language's where it reads in it.
+            titled = [c for c in made if c.lang.code == "zh" and c.lang.script in ("Hans", "Hant")]
+            for c in titled:
+                if c.lang.script == lang.script:
+                    cands.append(_convert(c.id, c.lang.script, c.sub.region, lang))
+            for c in titled:
+                if c.lang.script == other:
+                    cands.append(_recognize(c, lang))
         # 4. A translation of the best text subtitle in another language, a copy
         # after a text subtitle of the same rank.
         ranked = [(_source_rank(s, original, languages, english_first), False, s.id, s.language, s.is_sdh)

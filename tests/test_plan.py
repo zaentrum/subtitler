@@ -238,6 +238,18 @@ def test_a_traditional_image_track_is_copied_then_converted(make_package):
     assert (c.action, c.source, c.detail["config"]) == ("convert", COPY + "sub0", "t2s")
 
 
+def test_a_chinese_image_tracks_title_may_name_the_wrong_script(make_package):
+    # Reading tells its script: a copy titled Traditional is converted for Simplified where it reads
+    # Traditional, and is the Simplified one where it reads Simplified; the other way round for Traditional.
+    root = make_package(subs=[{"language": "chi", "format": "pgs", "title": "繁體中文"}])
+    plans = {p.language.tag: p for p in plan(load(root), parse_list("zh-Hans,zh-Hant"))}
+    assert [(x.action, x.source) for x in plans["zh-Hans"].candidates[:2]] == [("convert", COPY + "sub0"),
+                                                                             ("recognize", COPY + "sub0")]
+    hant = plans["zh-Hant"].candidates
+    assert [(x.action, x.source) for x in hant[:2]] == [("recognize", COPY + "sub0"), ("convert", COPY + "sub0")]
+    assert hant[1].detail["config"] == "s2t"
+
+
 def test_a_chinese_image_track_of_no_script_said_is_read_then_kept_or_converted(make_package):
     root = make_package(subs=[{"language": "chi", "format": "pgs", "title": ""}])
     cands = plan(load(root), LANGS)[2].candidates

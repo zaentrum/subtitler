@@ -74,11 +74,16 @@ def aside(source: str, name: str) -> str:
 
 def entry(c: Copy, lang: Lang, r: ocr.Recognized, version: str = __version__) -> dict:
     """A copy's line in the manifest: its file, label, how it was read, the NOTE of its file, and
-    what attaching it takes (a copy of signs and songs as forced, its label saying Signs)."""
-    lbl = ocr.label(c.sub.title, lang, c.kind)
+    what attaching it takes (a copy of signs and songs as forced, its label saying Signs). A Chinese
+    track whose characters are in the other script than its title names is labelled by its language
+    and the script it is in, not by that title."""
+    wrong = bool(c.lang.script and lang.script and c.lang.script != lang.script)
+    lbl = ocr.label("" if wrong else c.sub.title, lang, c.kind)
     what = f"{c.sub.id} ({c.sub.format}" + (f", '{c.sub.title}'" if c.sub.title else "") + ")"
     note = (f"{lbl}. Made by subtitler {version}: the text of the title's own image subtitle {what}, "
-            f"recognized (OCR) by {r.engine} with its {r.model} model; mean confidence {r.confidence:.1f}.")
+            f"recognized (OCR) by {r.engine} with its {r.model} model; mean confidence {r.confidence:.1f}."
+            + (f" Its title names {Lang('zh', c.lang.script).name}; its characters are "
+               f"{Lang('zh', lang.script).name}." if wrong else ""))
     forced, sdh = c.kind in ("forced", "signs"), c.kind == "sdh"
     return {"file": file_name(lang, c.kind), "language": lang.tag, "label": lbl, "origin": "recognized",
             "source": c.sub.id, "source_path": c.sub.path, "kind": c.kind, "forced": forced, "sdh": sdh,
@@ -238,7 +243,8 @@ def run_title(t: dict, langs: list[Lang], a, folder: Path) -> dict:
                      "bytes": _size(c, root)} for c in todo]}
     if a.dry_run:
         r["dry_run"] = True
-        r["model"] = {c.sub.id: (ocr.model_for(c.lang) or None) if c.lang.code != "zh" or c.lang.script
+        r["model"] = {c.sub.id: (ocr.model_for(c.lang) or None) if c.lang.code != "zh" else
+                      f"{ocr.model_for(c.lang)} (its title's script, its characters read to check it)" if c.lang.script
                       else "chi_sim or chi_tra (read to tell)" for c in todo}
         return r
     made: dict[tuple, str] = {}
@@ -262,8 +268,9 @@ def run_title(t: dict, langs: list[Lang], a, folder: Path) -> dict:
             r["made"].append(e)
         else:
             e["why"] = res.rejected
-            e["file"] = aside(c.sub.id, e["file"])  # written aside, for a person to look at
-            vtt.write(folder / e["file"], res.cues, notes=[note])
+            e["file"] = aside(c.sub.id, e["file"]) if res.cues else None  # aside, for a person to look at
+            if res.cues:
+                vtt.write(folder / e["file"], res.cues, notes=[note])
             r["not_attached"].append(e)
         say(f"{r['name']}: {c.sub.id} {lang.tag} {c.kind}: {len(res.cues)} cues, confidence {res.confidence:.1f}, "
             f"{res.cpu_seconds:.0f} CPU s" + (f"; not attached: {res.rejected}" if not res.accepted else ""))

@@ -873,14 +873,20 @@ def pictures_of(path: str | Path, fmt: str) -> list:
 
 
 PROBE = "chi_sim+chi_tra"  # both Chinese models at once: per character the one that reads it better
+# The characters a probe reads tell their script where they lean this much one way (script.detect_script:
+# the share of them a conversion into the one script changes more than one into the other); samples of 40
+# pictures of the seven Chinese tracks measured leaned 0.085-0.29, each the right way.
+PROBE_SURE = 0.02
 
 
 def probe_script(pictures: list, tessdata: str | Path | None = None, jobs: int = 0, sample: int = 40,
-                 engine_factory=None) -> tuple[str, dict]:
-    """Which script a Chinese image subtitle is in, when its title does not say: a sample of its
-    pictures read once with both models together (PROBE), the script of the characters read deciding
-    (script.detect_script; Simplified where they tell neither). The two models' confidence alone
-    picked the wrong one for a sample in eight."""
+                 engine_factory=None) -> tuple[str | None, dict]:
+    """Which script a Chinese image subtitle is in: a sample of its pictures read once with both models
+    together (PROBE), the script of the characters read deciding (script.detect_script) where they lean
+    PROBE_SURE or more one way; None where they tell neither (too few characters, no lean). Its title
+    is not asked: a track labelled with the wrong script reads almost as surely with that script's
+    model, and into its characters (a Simplified one read with chi_tra at 84-86). The two models'
+    confidence alone, read one after the other, picked the wrong script for a sample in eight."""
     from . import script
 
     step = max(1, len(pictures) // sample)
@@ -888,8 +894,10 @@ def probe_script(pictures: list, tessdata: str | Path | None = None, jobs: int =
     engine = engine_factory(PROBE) if engine_factory else Tesseract(PROBE, tessdata=tessdata, jobs=jobs, psm=7)
     r = recognize(picked, Lang("zh"), model=PROBE, engine=engine, min_confidence=0)
     found, share = script.detect_script("".join(vtt.plain(c.text) for c in r.cues))
-    return found or "Hans", {"model": PROBE, "pictures": len(picked), "by_characters": found,
-                             "share": round(share, 3), "confidence": round(r.confidence, 1)}
+    sure = found if found and share >= PROBE_SURE else None
+    return sure, {"model": PROBE, "pictures": len(picked), "by_characters": found, "share": round(share, 3),
+                  "confidence": round(r.confidence, 1), "engine": r.engine, "seconds": round(r.seconds, 1),
+                  "cpu_seconds": round(r.cpu_seconds, 1)}
 
 
 _FORMAT_WORDS = re.compile(r"[\s/\-–(\[]*\b(?:pgs|sup|vobsub|idx|image|bitmap)\b[)\]]?", re.I)
@@ -922,15 +930,34 @@ def label(title: str, lang: Lang, kind: str) -> str:
 def read_pictures(pictures: list, lang: Lang, tessdata: str | Path | None = None, jobs: int = 0,
                   min_confidence: float = MIN_CONFIDENCE, bilingual: bool = False, models: str | Path | None = None,
                   **kw) -> tuple[Lang, Recognized]:
-    """An image subtitle's pictures read into its text copy: the language it is in (a Chinese one's
-    script found by reading it where it is not known) and what was read. A bilingual track (Chinese
-    above, English below) is read with English's model too. A model Tesseract lacks is fetched into
-    `models`/tessdata where that is given (tessdata_for)."""
+    """An image subtitle's pictures read into its text copy: the language it is in and what was read.
+    A Chinese one's script is the one its characters are in (probe_script), whether its title names
+    one or not: where the title names one, the characters confirm it, or, where they clearly lean the
+    other way, the copy is read in theirs; where they tell neither, a track whose title names a script
+    is not read further and not attached (the copy rejected, why said), one whose title names none is
+    read as Simplified. A bilingual track (Chinese above, English below) is read with English's model
+    too. A model Tesseract lacks is fetched into `models`/tessdata where that is given (tessdata_for)."""
     meta = {}
     cache = Path(models) / "tessdata" if models else None
-    if lang.code == "zh" and lang.script is None:
-        script, meta["script_probe"] = probe_script(pictures, tessdata_for("chi_sim+chi_tra", tessdata, cache), jobs)
-        lang = Lang("zh", script)
+    if lang.code == "zh":
+        found, probe = probe_script(pictures, tessdata_for(PROBE, tessdata, cache), jobs)
+        meta["script_probe"] = probe
+        titled = lang.script
+        if titled is None:
+            lang = Lang("zh", found or "Hans")
+            meta["script_from"] = "characters" if found else "none told: Simplified"
+        elif found == titled:
+            meta["script_from"] = "title, characters agree"
+        elif found is not None:
+            lang = Lang("zh", found)
+            meta["script_from"] = f"characters, not its title ({titled})"
+        else:
+            meta["script_from"] = "title, characters tell no script"
+            why = (f"its title names {Lang('zh', titled).name}, and {probe['pictures']} of its pictures read with "
+                   f"both Chinese models tell no script clearly (their characters: "
+                   f"{probe['by_characters'] or 'too few, or no lean'}, {probe['share']:.3f} under {PROBE_SURE:g})")
+            return lang, Recognized([], PROBE, probe["engine"], 0.0, len(pictures), 0, 0, 0, probe["seconds"],
+                                    probe["cpu_seconds"], 0.0, rejected=why, meta=meta)
     model = model_for(lang)
     if model is None:
         raise LookupError(f"no OCR model for the language {lang.tag}")

@@ -228,7 +228,43 @@ def test_the_script_probe_reads_once_with_both_models_and_the_characters_decide(
     assert script == "Hant" and made == ["chi_sim+chi_tra"] and found["by_characters"] == "Hant"
     assert found["pictures"] == 40
     script, found = ocr.probe_script(pics, engine_factory=lambda m: FakeEngine({0: [("好", 90.0)]}))
-    assert script == "Hans" and found["by_characters"] is None  # too few characters to tell: Simplified
+    assert script is None and found["by_characters"] is None  # too few characters to tell either
+
+
+def test_a_chinese_tracks_script_is_its_characters_whatever_its_title_says(monkeypatch):
+    pics = [picture(1.0 + 2 * k, 2.0 + 2 * k) for k in range(60)]
+    read = []
+
+    def recognize(pictures, lang, model=None, **kw):
+        read.append(model)
+        cues = [vtt.Cue(p.start, p.end, "x", meta={"conf": 90.0, "chars": 1, "italic": False}) for p in pictures]
+        return ocr.Recognized(cues, model, "Tesseract 5.0.0", 90.0, len(pictures), 0, 0, 0, 1.0, 1.0, 60.0)
+
+    def probe(found, by=None, share=0.15):
+        return lambda *a, **k: (found, {"model": ocr.PROBE, "pictures": 40, "by_characters": by or found,
+                                         "share": share, "confidence": 88.0, "engine": "Tesseract 5.0.0",
+                                         "seconds": 1.0, "cpu_seconds": 2.0})
+
+    monkeypatch.setattr(ocr, "tessdata_for", lambda *a, **k: None)
+    monkeypatch.setattr(ocr, "recognize", recognize)
+    # Its title and its characters agree: read in its title's script.
+    monkeypatch.setattr(ocr, "probe_script", probe("Hant"))
+    lang, r = ocr.read_pictures(pics, Lang("zh", "Hant"))
+    assert lang.tag == "zh-Hant" and read == ["chi_tra"] and r.meta["script_from"] == "title, characters agree"
+    # A Simplified track labelled Traditional: read, and tagged, in the script its characters are in.
+    monkeypatch.setattr(ocr, "probe_script", probe("Hans"))
+    lang, r = ocr.read_pictures(pics, Lang("zh", "Hant"))
+    assert lang.tag == "zh-Hans" and read[-1] == "chi_sim" and r.accepted
+    assert r.meta["script_from"] == "characters, not its title (Hant)" and r.meta["script_probe"]["share"] == 0.15
+    # The characters tell no script: a track whose title names one is not read further, nor attached.
+    monkeypatch.setattr(ocr, "probe_script", probe(None, by="Hans", share=0.004))
+    lang, r = ocr.read_pictures(pics, Lang("zh", "Hant"))
+    assert lang.tag == "zh-Hant" and len(read) == 2 and not r.accepted and r.cues == []
+    assert "its title names Chinese (Traditional)" in r.rejected and "tell no script clearly" in r.rejected
+    assert r.cpu_seconds == 2.0 and r.summary()["script_probe"]["by_characters"] == "Hans"
+    # One whose title names none is read as Simplified then, as before.
+    lang, r = ocr.read_pictures(pics, Lang("zh"))
+    assert lang.tag == "zh-Hans" and read[-1] == "chi_sim" and r.accepted
 
 
 needs_tesseract = pytest.mark.skipif(not shutil.which("tesseract") or text_mask("x") is None,
