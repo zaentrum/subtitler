@@ -2,8 +2,9 @@
 
 Subtitles in each of an instance's languages for titles that have none,
 made on the platform with open-weight models (ADR-0014): keep the source's,
-convert the script, translate the best subtitle the title has, or
-transcribe the audio first and translate the transcript.
+give its image subtitles a text copy (OCR), convert the script, translate
+the best subtitle the title has, or transcribe the audio first and translate
+the transcript.
 
 It began as the spike that measured whether this holds (speech recognition
 and translation, their speed and quality on library titles, the decision
@@ -31,6 +32,10 @@ tool's.
   The same file runs on Metal and CUDA; about 9 GB of GPU memory with eight
   chains.
 - **Script: OpenCC** (Apache-2.0), `t2s`, `hk2s` for Hong Kong tracks.
+- **Image subtitles: Tesseract 5.5.4** (Apache-2.0) on Leptonica 1.87.0
+  (BSD-2-Clause), its LSTM engine line by line, with the `tessdata_fast`
+  4.1.0 models and `tessdata_best` for Chinese (Apache-2.0); PGS and VobSub
+  decoded here, in Python and numpy.
 
 ## Layout
 
@@ -43,12 +48,15 @@ tool's.
 | `src/subtitler/translate/` | translation by an instruction model behind llama.cpp's server, or by MADLAD-400 on CTranslate2; cue times kept, lines re-wrapped |
 | `src/subtitler/script.py` | Traditional ↔ Simplified Chinese by OpenCC, script and Cantonese detection |
 | `src/subtitler/wrap.py` | line limits per language, re-wrapping, Chinese punctuation house style, reading-speed statistics |
+| `src/subtitler/pgs.py`, `vobsub.py` | image subtitles: PGS (`.sup`) and VobSub (`.idx` + `.sub`) decoded into what they show, when |
+| `src/subtitler/ocr.py` | their text copies: pictures prepared, read by Tesseract, lines, italics, confidence, cues, labels |
+| `src/subtitler/recognize.py` | `subtitler ocr`: the text copies of packaged titles, title by title, paced |
 | `src/subtitler/cli.py` | `subtitler plan` and `subtitler run` |
-| `bench/` | the local measurements (`asr_run`, `asr_score`, `mt_run`, `mt_score`, `comet_score`, `opencc_demo`, `samples`, `summary`) and the GPU run (`gpu_bench`) |
+| `bench/` | the local measurements (`asr_run`, `asr_score`, `mt_run`, `mt_score`, `comet_score`, `opencc_demo`, `samples`, `summary`, `ocr_score`) and the GPU run (`gpu_bench`) |
 | `src/subtitler/job.py`, `original.py`, `transcribe.py`, `qc.py`, `models.py` | `subtitler job`: titles from their originals, the checks, the models |
-| `Dockerfile` | the image of `subtitler job` |
-| `deploy/` | `job.yaml` (a run, placeholders); the spike's GPU bench: `Dockerfile`, `bench-job.yaml`, `run-gpu-bench.sh` |
-| `tests/` | the decision logic and the text handling (`pytest`) |
+| `Dockerfile` | the image of `subtitler job` and `subtitler ocr` |
+| `deploy/` | `job.yaml` (a run, placeholders); `ocr-job.yaml` and `ocr-titles.sql` (the image subtitles' backlog); the spike's GPU bench: `Dockerfile`, `bench-job.yaml`, `run-gpu-bench.sh` |
+| `tests/` | the decision logic, the text handling and the image subtitles, built in the tests (`synth.py`) (`pytest`) |
 
 ## The source's own first
 
@@ -56,10 +64,12 @@ A title with no package plays from its original file, and that file often
 carries subtitles people made. `subtitler extract` takes the original's
 subtitle streams in the instance's languages out as WebVTT, one file a
 stream (SDH and forced tracks each their own, so they keep what they are),
-on the CPU, in one read of the file; commentary is left out, image subtitles
-are listed as left out (no text without OCR), and Chinese is told apart by
-script (the track title, else its characters). Each file's entry in
-`extracted.json` says what attaching it takes: origin `source`, its language,
+on the CPU, in one read of the file; commentary is left out, and Chinese is
+told apart by script (the track title, else its characters). A PGS stream
+of a language and kind no text stream is gets its text copy (OCR, below)
+from the same read; VobSub and DVB streams of an original are listed as
+left out. Each file's entry in `extracted.json` says what attaching it
+takes: origin `source` (`recognized` for a text copy), its language, label,
 SDH and forced. Nothing is attached by the tool.
 
 ```sh
@@ -67,8 +77,221 @@ subtitler extract --titles titles.json --out /work --languages en,de,zh-Hans --b
 ```
 
 `subtitler job` makes nothing for a language the original has a subtitle of
-its own in (a text or image stream, not forced, not commentary), and nothing
-at all for a title that has one in every language.
+its own in (a text or image stream, not forced, not commentary: extract
+makes an image stream's text copy), and nothing at all for a title that has
+one in every language.
+
+## Image subtitles: a text copy (OCR)
+
+Every app is to show a title's subtitles, and an image subtitle (PGS from a
+Blu-ray, VobSub from a DVD) is pictures of its lines that some clients draw
+and others cannot. So right after the source's own text comes a text copy of
+each image subtitle in one of the instance's languages: its lines read by
+Tesseract with the model of the track's language, written as WebVTT with
+the pictures' times. The copy is the title's own subtitle in text: it counts
+as present, and it is a source for the steps after it (a conversion, a
+translation), as the source's own text subtitles are.
+
+Which tracks (`plan.copies`): an image subtitle in one of the languages
+(Chinese of either script, by the track title, else by reading it; not
+written Cantonese), not commentary, of a kind (full, SDH, forced; a track
+far sparser than the title's fullest, signs and songs, is a kind of its own)
+that the title has no text subtitle of in that language; of several of a
+language and kind, the fullest. A forced one is copied where a full text
+subtitle of its language is there: it is a kind of its own.
+
+How (`ocr.py`):
+
+1. the pictures (`pgs.py`, `vobsub.py`): each display set's objects, shown
+   from its time to that of the set that clears or replaces it; sets that
+   show the same again (acquisition points, a fade's palette updates) are
+   one picture, read where it is most opaque;
+2. each picture laid onto black by its alpha, objects that stand apart (a
+   line at the top, one at the bottom) one by one, the upper first, and
+   each line on its own (the runs of rows with ink; an accent goes with its
+   line, two lines that touch are cut where they have the least ink);
+   inverted to dark on light, scaled to about 36 pixels high (a DVD's
+   doubled, a Blu-ray's kept), thresholded between the letters' fill and
+   their outline (Otsu over the pixels drawn), a margin;
+3. Tesseract's LSTM engine reads all lines of a track, each as a single
+   line (`--psm 7`; read as blocks of lines, `--psm 6`, Chinese lines lost
+   parts, `--psm 13` read worse), a process a core: words with their
+   confidence; a line read less surely than 60 is read again in grey
+   (Tesseract thresholding it), the surer reading kept; a pipe read for a
+   capital I, a lone l for I in English, typographic apostrophes, a lone
+   double quote before ? or !, and in French a lone I after a space for "!"
+   and a capital Ç within a sentence are put right; an ellipsis at a line's
+   start or end is told by the line's pixels (Tesseract leaves it out or
+   reads it short); Chinese words are joined without a space unless the
+   picture has a wide gap there;
+4. a line whose strokes lean 7° or more (the shear that makes its columns
+   of ink sharpest) is set in `<i>`;
+5. a cue a picture; pictures in a row that read the same are one cue.
+
+A copy whose confidence (Tesseract's, over its characters) is under 80 is
+not attached: it is written aside (`not-attached-<file>`) and the report
+says why, and its language's next candidate makes the language's subtitle.
+A language without a Tesseract model is not read, and said so; a model the
+image does not have is fetched into `--models` (tessdata_fast 4.1.0;
+tessdata_best for Chinese).
+
+The label is the track's own name and a plain mark, as a made subtitle's
+says how it was made ("German · AI"): "English (Forced) · OCR", or the
+language's where the track has none ("English · OCR", "English · SDH ·
+OCR"); words of the image format ("PGS") are left out, the copy is text.
+Its origin is `recognized` (the catalog's attach seam takes it once
+katalog-manager lists it among its origins beside `source`, `provider`,
+`transcribed`, `translated` and `converted`); forced and SDH are carried
+(`<tag>.forced.vtt`, `<tag>.sdh.vtt`), and the NOTE of its file says which
+track it was read from, by which Tesseract and model, and with what
+confidence.
+
+```sh
+subtitler ocr --titles titles.json --out /work --languages en,de,zh-Hans --hours 22-17 --read-mbps 20 [--dry-run]
+```
+
+```json
+[{"id": "ITEM_ID", "name": "S01E06", "package": "/media/PATH/versions/VERSION_ID"}]
+```
+
+`subtitler ocr` does it for packaged titles, title by title, on the CPU:
+`<out>/<id>/<tag>[.sdh|.forced|.signs].vtt` and `ocr.json` (each file with
+what attaching it takes, the copies not attached with why). It reads the
+store only within `--hours` (UTC; by default never 17-22, the evening's
+playback), each image track of the languages once and at most
+`--read-mbps`, a pause between titles; a title done in a run before is not
+read again (`--again` reads it), so a run cut short goes on where it
+stopped; `--dry-run` reads package.json alone and says what it would read.
+`subtitler run` makes a package's copies first and then the rest from them;
+`subtitler extract` copies an original's PGS streams in the same read of
+the file as its text streams (`--no-ocr` leaves them out, as before).
+
+### How well it reads
+
+Measured against the titles' own text tracks of the same subtitle: 45 PGS
+tracks of production titles that carry their language as a text track too,
+the two labelled as one subtitle ("English PGS" and "English SRT", "Français
+SUP" and "Français SRT", the same label twice), picked at random per
+language, 39 in Latin scripts (one of them forced) and 6 Chinese
+(`bench/ocr_score.py`, the copies read as `subtitler ocr` reads them); the
+files read from the store at night, `cat` alone. Cues pair by time; where
+the text track is the same subtitle, made from the image one, its cues keep
+the image's times, so the character error rate counts the pairs whose start
+and end agree to 50 ms (the track's own shift aside), an SDH track's
+annotations and speakers' names and the dialogue dashes out of both (a text
+track of the dialogue labelled as the SDH image one, a dash spaced or not)
+and the typography (… ’ “ –) as one. A track of another version (its own
+translation, cues cut otherwise) shows as few such pairs and does not count.
+
+| language | tracks | of the same subtitle | cues compared | CER | case and spaces aside | median track | confidence |
+|---|---|---|---|---|---|---|---|
+| English | 12 | 11 | 9,853 | 1.01 % | 0.52 % | 1.17 % | 95.1 |
+| German | 4 | 4 | 3,502 | 0.07 % | 0.06 % | 0.06 % | 95.1 |
+| Spanish | 3 | 3 | 2,072 | 0.11 % | 0.07 % | 0.08 % | 95.4 |
+| French | 3 | 3 | 2,938 | 0.17 % | 0.11 % | 0.18 % | 93.9 |
+| Italian | 3 | 2 | 1,519 | 0.06 % | 0.05 % | 0.03 % | 94.8 |
+| Dutch | 3 | 2 | 976 | 0.95 % | 0.82 % | 0.97 % | 92.8 |
+| Swedish | 2 | 2 | 1,029 | 0.02 % | 0.02 % | 0.02 % | 95.3 |
+| Danish | 2 | 1 | 512 | 0.22 % | 0.15 % | 0.22 % | 95.2 |
+| Norwegian | 2 | 2 | 1,382 | 0.08 % | 0.07 % | 0.10 % | 95.4 |
+| Finnish | 2 | 1 | 531 | 0.13 % | 0.06 % | 0.13 % | 94.9 |
+| Polish | 2 | 2 | 2,162 | 0.12 % | 0.06 % | 0.13 % | 94.8 |
+| English, forced | 1 | 1 | 32 | 0.52 % | 0.13 % | 0.52 % | 95.4 |
+| **Latin scripts** | 39 | 34 | 26,508 | **0.49 %** | 0.27 % | 0.14 % | |
+
+Chinese apart (Simplified with `chi_sim`, Traditional and written Cantonese
+with `chi_tra`, both from tessdata_best):
+
+| language | tracks | of the same subtitle | cues compared | CER | case and spaces aside | median track | confidence |
+|---|---|---|---|---|---|---|---|
+| Chinese (Simplified) | 2 | 2 | 3,137 | 3.96 % | 3.96 % | 3.91 % | 86.6 |
+| Chinese (Traditional) | 3 | 2 | 3,171 | 4.30 % | 4.30 % | 4.11 % | 87.5 |
+| Cantonese (Traditional characters) | 1 | 1 | 1,558 | 7.22 % | 7.22 % | 7.22 % | 85.8 |
+
+What the error rate still counts is mostly the text tracks' own. Where a
+person typed or corrected a text track from the pictures, it differs from
+them (names in lower case, an interruption's `--` written `...`, a word's
+case changed, speakers' names added), and the copy, which reads what the
+picture shows, counts as wrong: English carries the most of it (on the three
+English tracks whose text is the pictures' as they stand, 0.04-0.12 %), and
+one Dutch text track is a version re-worded at the same times. The copies'
+own errors, read where the two differ: a lone l for I or the other way
+round, a capital after an ellipsis, an l read before an exclamation mark, a
+space lost in a line of capitals; in Chinese, characters read for others of
+a similar shape, and the colloquial characters of the Cantonese track. Line
+breaks are the pictures' (a text track re-wrapped by hand accounts for the
+cues whose lines differ).
+
+Italics, on the 22 tracks whose text track marks them (2,797 of 24,168
+cues): the copies set 95.4 % of them in italics, and 97.2 % of the cues
+they set in italics are the text track's; the slant's threshold matters
+little (5° to 10°: within a point).
+
+The confidence follows the errors: per cue, over every pair (other
+versions among them), 42 % of the characters of cues under 50 differ, 18 %
+of those of 50-70, 14 % of 70-85, 10 % of 85-90, 3 % of 90 and more. Per
+track it is 92-96 in the Latin scripts and 86-88 in Chinese: the gate of
+80 passes every one measured.
+
+A Chinese track whose title names no script is read with both models on
+40 of its pictures and the surer reading tells it: right for all six
+(Traditional by 12-15 points of confidence, Simplified by 3-4; the
+Cantonese track, written in Traditional characters, Traditional).
+
+VobSub: five of the library's VobSub tracks in the instance's languages
+(of four films; the library has 32 in all) decoded and read, with no text
+track of the same subtitle to check them by: at a confidence of 94.3-94.7
+(English, German, a German forced track of three pictures) and 89.6
+(Chinese, read as Simplified). One English VobSub track against the same
+film's English PGS track, the same subtitle in another release, both read:
+1,826 of 1,828 cues pair, and the two copies differ in 0.16 % of their
+characters.
+
+### What it costs
+
+Measured in short runs at normal priority on the spike's machine (Apple M5,
+three processes; the bulk ran at background priority, whose times are not
+quoted): 15-17 CPU seconds per 1,000 pictures with the fast models, 21-29
+for Chinese with the best ones, of which decoding takes 5-11 %, preparing
+the lines 2-8 % and Tesseract the rest. That is 7-16 CPU seconds per hour
+of a track's runtime: a two-hour film's full track 24-34 CPU seconds, 10-14
+seconds of wall time on three processes. The image grows by 38 MB
+(Tesseract and its models, "The run" below).
+
+### The backlog
+
+Planned from the catalog (`deploy/ocr-titles.sql`, read-only; not run): a
+text copy is due for 3,378 image subtitles of 2,406 titles (2,174
+episodes, 232 films), 1,774 hours of runtime, 2,753 hours of tracks; among
+them 1,808 of the 1,828 titles whose only subtitles are images (the other
+20 have image subtitles in other languages alone, 11 of them tagged `und`)
+and the 12 whose forced English track is an image alone.
+
+| language | full | SDH | forced | of them VobSub |
+|---|---|---|---|---|
+| English | 1,082 | 1,186 | 169 | 3 |
+| German | 775 | 28 | 8 | 2 |
+| Chinese | 130 (22 Simplified, 46 Traditional, 62 read to tell) | | | 2 |
+
+What it would take, from the sample's 722 pictures and 15.3 MB of PGS an
+hour of a track's runtime and the cost above: about 2 million pictures,
+about 10 CPU hours at the spike machine's speed (16.6 CPU seconds per 1,000
+pictures, Chinese 21); the cluster's cores are not measured: at half that
+speed 20 CPU hours, about 7 hours on three cores, one night within the
+hours it may read (22:00 to 17:00 UTC, 19 hours a day). 42 GB read from
+the store, each track once, at 20 MB/s at most, which is 35 minutes of
+reading spread over the run (under 2 MB/s on average); nothing written to
+it.
+
+The run, when the owner says go: `titles.json` from the query, newest
+first (ADR-0014: most-watched and newest first; the watch counts are the
+player's, to order the list by before the run), `subtitler ocr --dry-run`
+over it, then `deploy/ocr-job.yaml` (the image, CPU only, 3 cores; the
+media volume read-only, a work claim for the copies), which reads nothing
+from 17:00 to 22:00 UTC, each track once at 20 MB/s at most, and goes on
+where a run before stopped. The copies are attached through the catalog's
+seam (origin `recognized`) once it takes that origin; a later GPU run
+translates from them where a language lacks a subtitle.
 
 ## The run
 
@@ -116,24 +339,34 @@ when the GPU has its memory free plus `--vram-reserve` MiB for the live
 worker.
 
 The image (`Dockerfile`, built by CI as `ghcr.io/zaentrum/subtitler`) holds
-llama.cpp's release build for CUDA 12.8, FFmpeg 7.1 and the Python side;
-no model. `deploy/job.yaml` is a Job for it with placeholders.
+llama.cpp's release build for CUDA 12.8, FFmpeg 7.1, Tesseract and the
+Python side; no speech or translation model. `deploy/job.yaml` is a Job for
+it with placeholders. Tesseract 5.5.4 and Leptonica 1.87.0 are built from
+their releases in a stage of their own (40 s on six cores), for PNM in and
+TSV out: 6.7 MB that need libstdc++ and zlib alone, and 31.7 MB of models
+(`eng` and `deu` from tessdata_fast, 5.6 MB; `chi_sim` and `chi_tra` from
+tessdata_best, 26 MB), 38 MB in all. Ubuntu's package would add 97 MB
+(ICU, Pango, Cairo, fonts, curl) and, through libtiff, libjbig0 under the
+GPL-2.0.
 
 ## The decision per language
 
 For each language of `--languages` (the instance's `subtitles.languages`,
-BCP 47 with a script where it matters, default `en,de,zh-Hans`):
+BCP 47 with a script where it matters, default `en,de,zh-Hans`), after the
+text copies of its image subtitles (above):
 
-1. **keep**: the package has a complete subtitle in it (and in its script)
-   that a viewer can turn on: WebVTT, or PGS, which the web client draws;
-2. **convert**: the same language in the other script as text: OpenCC,
-   `t2s` (`hk2s` for Hong Kong tracks), no model;
-3. **translate**: the best complete *text* subtitle in another language:
-   the original language first, then English, then the instance's
-   languages, then widely translated ones; dialogue before SDH, the fuller
-   track first;
-4. **transcribe**: speech recognition of the main audio: the subtitle when
-   the audio is in the language, else the source of 3. It is the last
+1. **keep**: the package has a complete text subtitle in it (and in its
+   script);
+2. **recognize**: the text copy of a complete image subtitle in it (with
+   `--no-ocr`: a PGS track counts as kept, as the web client draws it);
+3. **convert**: the same language in the other script as text, a copy's
+   too: OpenCC, `t2s` (`hk2s` for Hong Kong tracks), no model;
+4. **translate**: the best complete *text* subtitle in another language,
+   copies among them: the original language first, then English, then the
+   instance's languages, then widely translated ones; dialogue before SDH,
+   the fuller track first, a text subtitle before a copy of the same rank;
+5. **transcribe**: speech recognition of the main audio: the subtitle when
+   the audio is in the language, else the source of 4. It is the last
    candidate of every language, so it is chosen only when the title has no
    text subtitle at all, or a viewer reported every other one.
 
@@ -167,9 +400,11 @@ zh-Hans  translate sub5 (it)   [then translate sub0 (en); then translate sub2 (d
 
 `subtitler run PACKAGE --out DIR` does it and writes `DIR/<language>.vtt`
 with a NOTE saying how it was made, and `DIR/subtitles.json`: per language
-the label ("German · AI", "Chinese (Simplified) · Converted"), the origin
-(`transcribed`, `translated`, `converted`), the source track and language,
-the model, timings and tokens.
+the label ("German · AI", "Chinese (Simplified) · Converted", "English ·
+OCR"), the origin (`recognized`, `transcribed`, `translated`, `converted`),
+the source track and language, the model, timings and tokens; the copies
+not attached, with why. A candidate that cannot be made (a copy read too
+unsurely, one read in the other script) leaves the language to the next.
 
 ## Running it locally
 
@@ -177,6 +412,11 @@ the model, timings and tokens.
 uv venv -p 3.12 .venv && . .venv/bin/activate
 uv pip install -e '.[asr,mt,eval,zh,dev]'       # mlx-whisper too on a Mac: '.[mlx]'
 pytest
+
+# The text copies of image subtitles need Tesseract 5 (brew install tesseract: English
+# alone; other languages' tessdata_fast models in a folder given as --tessdata, or
+# fetched into --models):
+subtitler ocr --titles titles.json --out /path/to/scratch --hours 0-24 --read-mbps 0
 
 # Translation needs a llama.cpp server with the model (release b11430 here):
 llama-server -m Qwen_Qwen3.5-9B-Q4_K_M.gguf --port 8091 -ngl 99 -fa on --reasoning off -c 16384
@@ -252,6 +492,7 @@ fetches the models (about 19 GB) into `/models`, and measures:
 | translation | Qwen2.5-7B-Instruct (bartowski GGUF Q4_K_M) | Apache-2.0 | llama.cpp |
 | translation | MADLAD-400 3B MT (Nextcloud-AI CTranslate2 int8) | Apache-2.0 | CTranslate2 |
 | script | OpenCC | Apache-2.0 | opencc (Python) |
+| image subtitles | tessdata_fast 4.1.0 (`eng`, `deu` in the image; others fetched), tessdata_best 4.1.0 (`chi_sim`, `chi_tra`) | Apache-2.0 | Tesseract 5.5.4 (Apache-2.0) on Leptonica 1.87.0 (BSD-2-Clause), built from source |
 | Chinese line breaks | jieba word segmentation | MIT | jieba (Python) |
 | scoring only | COMET wmt22-comet-da | Apache-2.0 | unbabel-comet |
 
@@ -397,8 +638,8 @@ second).
 - **Library quirks the decision handles:** unflagged signs-only tracks
   (27 cues in a 109-minute film), "Hong Kong" tracks in Cantonese,
   untitled Chinese tracks of either script, bilingual tracks. PGS image
-  tracks are 38 % of the sampled subtitle tracks: present for viewers, no
-  source without OCR.
+  tracks are 38 % of the sampled subtitle tracks (15 % of the catalog's
+  subtitle rows): their text copies (OCR) make them a source.
 - **A larger model writes better German.** Qwen3.8-27B (Apache-2.0,
   IQ4_XS) on the two English→German pairs: COMET 0.787 against 0.777 and,
   read, about two errors in 20 cues against four to five (a toast, the
@@ -416,6 +657,13 @@ second).
 - **Abbreviations.** "U.S." taken for a sentence end made the model join
   lines: seven times the requests and three times the tokens for one
   window; fixed.
+- **Image subtitles read back nearly as written.** Against text tracks of
+  the same subtitle, 0.49 % of the characters in the Latin scripts (the
+  median track 0.14 %), most of it the text tracks' own edits; Chinese about
+  4 % with tessdata_best (5.6 % with tessdata_fast on a sample). Read line
+  by line: as blocks of lines, Tesseract left parts of Chinese lines out;
+  and it reads an ellipsis at a line's edge short or not at all, which the
+  pixels tell instead.
 
 ## The ADR's target
 

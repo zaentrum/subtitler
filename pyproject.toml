@@ -18,7 +18,7 @@ mt = ["ctranslate2>=4.5", "sentencepiece"]
 # Chinese line breaks between words (MIT).
 zh = ["jieba>=0.42"]
 # Scores of the bench.
-eval = ["jiwer>=3", "sacrebleu>=2.4", "whisper-normalizer"]
+eval = ["jiwer>=3", "sacrebleu>=2.4", "whisper-normalizer", "rapidfuzz"]
 comet = ["unbabel-comet>=2.2"]
 # Tests: Pillow draws the text of the synthetic image subtitles (its own font).
 dev = ["pytest", "pillow"]

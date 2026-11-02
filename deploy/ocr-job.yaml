@@ -1,0 +1,101 @@
+# The backlog of image subtitles: `subtitler ocr` over packaged titles, on the
+# CPU (no GPU), from their version folders on the media volume (mounted
+# read-only), into the work folder. Nothing here is applied by this
+# repository; a deployment fills in the placeholders and applies it:
+#
+#   NAMESPACE     the namespace the platform runs in
+#   IMAGE         ghcr.io/zaentrum/subtitler:<commit>
+#   MEDIA_CLAIM   the media volume's claim, mounted where titles.json's
+#                 version folders are (the catalog's paths: /var/lib/katalog)
+#   WORK_CLAIM    a claim of its own for the copies (a title's are tens of
+#                 kilobytes; the backlog's some hundred megabytes), kept for
+#                 the step that attaches them: <id>/ocr.json says, per file,
+#                 what attaching it takes (origin `recognized`)
+#
+# titles.json: the catalog's titles with an image subtitle in a language of
+# the instance and no text subtitle of its kind (README, "The backlog"), in
+# the order they are to be done. Run it with --dry-run first: it reads
+# package.json alone and says what each title would be read for.
+#
+# Paced for the shared store: --hours 22-17 reads nothing from 17:00 to
+# 22:00 UTC (the evening's playback), --read-mbps caps each file's read, a
+# pause between titles. activeDeadlineSeconds lets a part of the list run a
+# day; a run after it on the same work claim goes on where it stopped (a
+# title with its ocr.json there is not read again).
+#
+# A short list can write its files to the log as well (--bundle), for
+# whoever started the run to collect; the backlog's would outgrow the log.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: subtitler-ocr-titles
+  namespace: NAMESPACE
+data:
+  titles.json: |
+    [
+      {"id": "ITEM_ID", "name": "NAME", "package": "/var/lib/katalog/movies/AA/ITEM_ID/versions/VERSION_ID"}
+    ]
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: subtitler-ocr
+  namespace: NAMESPACE
+  labels:
+    app.kubernetes.io/name: subtitler-ocr
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 64800
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: subtitler-ocr
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: subtitler
+          image: IMAGE
+          imagePullPolicy: IfNotPresent
+          args: ["ocr", "--titles", "/etc/subtitler/titles.json", "--out", "/work", "--languages", "en,de,zh-Hans",
+                 "--jobs", "3", "--hours", "22-17", "--read-mbps", "20", "--pause", "2"]
+          resources:
+            requests:
+              cpu: "3"
+              memory: 2Gi
+            limits:
+              cpu: "4"
+              memory: 4Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: media
+              mountPath: /var/lib/katalog
+              readOnly: true
+            - name: titles
+              mountPath: /etc/subtitler
+              readOnly: true
+            - name: work
+              mountPath: /work
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: media
+          persistentVolumeClaim:
+            claimName: MEDIA_CLAIM
+            readOnly: true
+        - name: titles
+          configMap:
+            name: subtitler-ocr-titles
+        - name: work
+          persistentVolumeClaim:
+            claimName: WORK_CLAIM
+        - name: tmp
+          emptyDir:
+            sizeLimit: 2Gi
